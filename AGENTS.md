@@ -43,6 +43,30 @@
 3. **通过之后**才放宽范围 → 按上表升版本 → 打 annotated tag；**没通过就不要声明**。
 4. 把结论回填 `docs/superpowers/plans/`：diff 结论、实测命令与结果、范围矩阵。
 
+### 发布一个版本的 SOP（不许跳步）
+
+**前提**：npm 上该包的 **Settings → Trusted Publisher** 已登记 repo `0x7a76/dsh-extra-paths` + workflow
+`release.yml`（Environment 留空）。没登记时推 tag 换不到发布凭据，会以 `ENEEDAUTH` 失败。
+
+1. **本地先绿**：`pnpm run typecheck`（宿主 + 客户端两侧）、`pnpm test`、`pnpm run build` 全过。
+   行为改动最好在真实宿主上实测一次（桌面版的验证办法见 README「安装」与扩宿主线记录里的写法）。
+2. **升版本号（两处必须同时改）**：`package.json` 的 `version` + 本文件顶部的版本表。
+   **patch** = 修 bug / 文档 / 元数据；**minor** = 新增宿主线或不兼容调整。**禁止**写成宿主号。
+3. **重新构建并一起提交**：`pnpm run build` → `git add -A`（含 `lib/`）→ 提交。CI 会核对 `lib/` 与一次全新构建
+   是否一致，漏了直接红。
+4. **打 annotated tag 并推送**：`git tag -a vX.Y.Z -m "vX.Y.Z — 一句话；兼容范围 …"` → `git push origin vX.Y.Z`。
+   tag message 写清支持的宿主线（与顶部版本表一致）。**只推这一个 tag；不要重复推已存在的 tag**——
+   那会让 workflow 去发一个已存在的版本，registry 直接拒绝。
+5. **workflow 接管**（`.github/workflows/release.yml`）：校验 `tag == package.json.version` → `pnpm install`
+   → `prepublishOnly`（build + 全量测试）→ **OIDC 可信发布**上 npm（仓库里没有 token，自动附 provenance）
+   → 建 GitHub Release。
+6. **发布后核对**：`npm view dsh-extra-paths version dist-tags license`；再把 `npm pack --dry-run` 的 shasum 与
+   registry 上的 `dist.shasum` 比一次（必须逐字相同）。桌面版装了就顺手升级：
+   `dsh plugin --profile desktop add dsh-extra-paths@X.Y.Z`（改 `~/.dsh`，且要重启应用生效）。
+7. **出错怎么办**：npm 上已发布的版本**不可修改**，发错了只能再发一个 patch；tag 推错了可以删
+   （`git push origin :refs/tags/vX.Y.Z`），但已经发布出去的内容收不回来。手工 `npm publish` 只作为 workflow
+   不可用时的兜底，事后仍要补 tag，别让 registry 与仓库脱节。
+
 ## 仓库操作约定
 
 - 🔴 **`lib/` 是提交的构建产物**（profile 用 `link:` 安装，加载的就是它）→ 改完 `src/` **必须
@@ -70,8 +94,7 @@
   ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2`，
   再用 `DSH_APP_DIR` 指过去——因为 `scripts/dsh-paths.mjs` 是严格的，而 **`@deepseek-ai/dsh` 这个 npm 包并不含那些 peer**
   （它 82 个依赖里一个都没有）。扩宿主线时记得同步这个锚点版本。
-  发布流程：改 `package.json` 版本（+ 本文件的版本表）→ 提交 → `git tag -a vX.Y.Z` → 推 tag；workflow 会先校验
-  tag 与 `package.json` 一致，再交给 `prepublishOnly`（build + 全量测试）后才真正上 registry。
+  发布的完整步骤见上方「发布一个版本的 SOP」。
 - 客户端改动**刷新页面即可生效**；宿主改动**必须重启 dsh**。
 
 ## 红线
