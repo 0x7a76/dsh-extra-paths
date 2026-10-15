@@ -9,15 +9,18 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      # Node 24: the runtime the desktop app ships (24.18.1) and a leg of DSH's
+      # own engines range (`^22.19.0 || >=24.0.0`). The action versions below all
+      # run on node24 natively - v4 majors target node20 and get warned about.
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       # scripts/dsh-paths.mjs is strict: it resolves the @deepseek-ai/* peer types
