@@ -1,0 +1,14 @@
+{
+  // Editor-facing only. VS Code / WebStorm resolve a file's project by walking up
+  // for the CONVENTIONAL name `tsconfig.json`, so `src/client/**` used to be
+  // checked against the repository root's config — the HOST build, which excludes
+  // `src/client/**` and carries no `jsx`, surfacing as
+  // "TS17004: Cannot use JSX unless the --jsx flag is provided" in the editor
+  // while `pnpm run typecheck` was clean.
+  //
+  // This file gives the client half its own nearest config. The build does NOT
+  // use it: `pnpm run typecheck` runs `tsconfig.json` and `tsconfig.client.json`,
+  // and tsdown bundles `src/client/index.tsx` directly.
+  "extends": "../../tsconfig.client.json",
+  "include": ["./**/*.ts", "./**/*.tsx"]
+}

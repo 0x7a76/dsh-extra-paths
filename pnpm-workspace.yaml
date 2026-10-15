@@ -1,0 +1,8 @@
+# Peer dependencies are METADATA here (what the running host must provide): the
+# plugin's dev install resolves their types through scripts/dsh-paths.mjs ->
+# tsconfig.peers.json instead, so installing them would only bloat the lockfile
+# and pull the whole DSH surface into devDependencies.
+autoInstallPeers: false
+allowBuilds:
+  esbuild: true
+storeDir: .pnpm-store

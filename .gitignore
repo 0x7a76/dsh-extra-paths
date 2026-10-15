@@ -1,0 +1,17 @@
+# 依赖（安装产物，不提交）
+node_modules/
+.pnpm-store/
+
+# 生成物：paths 指向本机 DSH 安装，换机器会不同（pnpm install 的 prepare 会重新生成）
+tsconfig.peers.json
+
+# 编辑器 / 系统
+.idea/
+.DS_Store
+*.log
+
+# 说明：lib/ 是构建产物但**刻意提交**——本插件的安装方式是"按绝对路径 add"，
+# commit 后 clone 即可直接安装使用。改源码后需 `pnpm build` 并一并提交（见设计文档 §9）。
+
+# 本地 dump/预检用的临时 profile 副本
+.dsh-probe/

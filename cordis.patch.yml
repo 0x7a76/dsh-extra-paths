@@ -1,0 +1,6 @@
+# dsh-extra-paths bundle patch: ONE inserted row over the profile root, nothing
+# disabled. Later layers (the user's profile cordis.patch.yml) may address this
+# row by id; the plugin's own settings live in the dsh settings document.
+- insert:
+    - id: extra-paths
+      name: 'dsh-extra-paths'
