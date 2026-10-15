@@ -46,7 +46,8 @@
 ### 发布一个版本的 SOP（不许跳步）
 
 **前提**：npm 上该包的 **Settings → Trusted Publisher** 已登记 repo `0x7a76/dsh-extra-paths` + workflow
-`release.yml`（Environment 留空）。没登记时推 tag 换不到发布凭据，会以 `ENEEDAUTH` 失败。
+`release.yml`（Environment 留空）。没登记时推 tag 换不到凭据，会以 `ENEEDAUTH` 失败。
+**Allowed actions 两个勾都不用打**——`npm stage publish` 是永远允许的（最小权限：这个 workflow 拿不到直接发布的权力）。
 
 1. **本地先绿**：`pnpm run typecheck`（宿主 + 客户端两侧）、`pnpm test`、`pnpm run build` 全过。
    行为改动最好在真实宿主上实测一次（桌面版的验证办法见 README「安装」与扩宿主线记录里的写法）。
@@ -57,15 +58,20 @@
 4. **打 annotated tag 并推送**：`git tag -a vX.Y.Z -m "vX.Y.Z — 一句话；兼容范围 …"` → `git push origin vX.Y.Z`。
    tag message 写清支持的宿主线（与顶部版本表一致）。**只推这一个 tag；不要重复推已存在的 tag**——
    那会让 workflow 去发一个已存在的版本，registry 直接拒绝。
-5. **workflow 接管**（`.github/workflows/release.yml`）：校验 `tag == package.json.version` → `pnpm install`
-   → `prepublishOnly`（build + 全量测试）→ **OIDC 可信发布**上 npm（仓库里没有 token，自动附 provenance）
-   → 建 GitHub Release。
-6. **发布后核对**：`npm view dsh-extra-paths version dist-tags license`；再把 `npm pack --dry-run` 的 shasum 与
+5. **workflow 只暂存，不发布**（`.github/workflows/release.yml`）：校验 `tag == package.json.version` → `pnpm install`
+   → `prepublishOnly`（build + 全量测试）→ 用 **OIDC** 跑 `npm stage publish`（仓库里没有 token，**不会上线**）
+   → 建一个 **draft** GitHub Release，并把 **stage id + 批准链接**写进 job summary。
+6. **人工批准（2FA）**：到 https://www.npmjs.com/settings/0x7a76/staged 点 **Approve**（或 `npm stage approve <id>`）——
+   这一步之后版本才真正出现在 registry（`latest` 才会指向它）；随后把那个 draft Release 发布掉。
+   不想上线就 **Reject**，registry 上不会留痕。
+7. **发布后核对**：`npm view dsh-extra-paths version dist-tags license`；再把 `npm pack --dry-run` 的 shasum 与
    registry 上的 `dist.shasum` 比一次（必须逐字相同）。桌面版装了就顺手升级：
    `dsh plugin --profile desktop add dsh-extra-paths@X.Y.Z`（改 `~/.dsh`，且要重启应用生效）。
-7. **出错怎么办**：npm 上已发布的版本**不可修改**，发错了只能再发一个 patch；tag 推错了可以删
+8. **出错怎么办**：npm 上已发布的版本**不可修改**，发错了只能再发一个 patch；tag 推错了可以删
    （`git push origin :refs/tags/vX.Y.Z`），但已经发布出去的内容收不回来。手工 `npm publish` 只作为 workflow
    不可用时的兜底，事后仍要补 tag，别让 registry 与仓库脱节。
+   **想改成"推 tag 直接上线"**：在 Trusted Publisher 里勾上 "Allow `npm publish`"，并把 workflow 的
+   `npm stage publish` 换成 `npm publish`（并去掉 draft 与 summary 两步）。当前刻意不这么做——发布权留在人手里。
 
 ## 仓库操作约定
 
@@ -89,8 +95,9 @@
   （**仅给编辑器就近匹配用**，没有它编辑器会拿宿主配置检查 `.tsx` 并报 `TS17004`）。
 - **不要提交本机绝对路径、凭据或内部令牌**；示例一律用占位符或 `~`。
 - **CI 与发布**：`.github/workflows/ci.yml` 在 push/PR 上跑验证三件套，并检查 `lib/` 相对一次全新构建有没有漂移
-  （改了 `src/` 忘记重建会直接红）；`.github/workflows/release.yml` 在推 `v*` tag 时用 **OIDC 可信发布**上 npm
-  （不需要任何 token，自动带 provenance）并建 GitHub Release。
+  （改了 `src/` 忘记重建会直接红）；`.github/workflows/release.yml` 在推 `v*` tag 时用 **OIDC** 把版本
+  **提交到 npm 暂存区**（不需要任何 token，**不会直接上线**），等维护者 2FA 批准后才出现在 registry，
+  同时建一个 draft GitHub Release。
   ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2`，
   再用 `DSH_APP_DIR` 指过去——因为 `scripts/dsh-paths.mjs` 是严格的，而 **`@deepseek-ai/dsh` 这个 npm 包并不含那些 peer**
   （它 82 个依赖里一个都没有）。扩宿主线时记得同步这个锚点版本。

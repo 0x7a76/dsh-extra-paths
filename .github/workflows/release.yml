@@ -1,17 +1,19 @@
 name: Release
 
-# Push a version tag (`git push origin v0.1.2`) to publish. The tag must match
-# the `version` in package.json; the job fails before publishing otherwise.
+# Push a version tag (`git push origin v0.1.2`) to STAGE a release. The tag must
+# match `version` in package.json. Nothing reaches the registry here: `npm stage
+# publish` only files the version in npm's staging area, and a maintainer
+# approves it with 2FA on npmjs.com before it becomes public.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write # gh release create
+  contents: write # draft GitHub Release
   id-token: write # OIDC identity for npm trusted publishing
 
 jobs:
-  publish:
+  stage:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,9 +30,8 @@ jobs:
       # Trusted publishing needs npm >= 11.5.1; Node 22 still ships npm 10.
       - run: npm i -g npm@11
 
-      # Same peer-type anchor as ci.yml: `prepublishOnly` runs the typecheck-free
-      # build, but `scripts/dsh-paths.mjs` is strict and needs a directory that
-      # actually contains @deepseek-ai/*.
+      # Same peer-type anchor as ci.yml: `scripts/dsh-paths.mjs` is strict, and
+      # `prepublishOnly` (build + full test suite) runs it before packing.
       - name: Provide peer types for scripts/dsh-paths.mjs
         run: |
           mkdir -p "$RUNNER_TEMP/dsh-peers"
@@ -52,12 +53,38 @@ jobs:
           fi
 
       # No NPM_TOKEN: npm exchanges this workflow's OIDC identity for a
-      # short-lived publish credential (trusted publishing) and attaches
-      # provenance automatically. package.json's prepublishOnly runs the build
-      # and the full test suite first, so a broken tag cannot reach the registry.
-      - run: npm publish --access public
+      # short-lived credential. Staging needs no 2FA and publishes nothing, so a
+      # bad tag cannot reach the registry on its own. package.json's
+      # prepublishOnly runs the build and the tests before the tarball is packed.
+      - name: Stage on npm (nothing goes live)
+        id: stage
+        run: |
+          set -o pipefail
+          npm stage publish | tee "$RUNNER_TEMP/stage.log"
+          id="$(grep -oE 'staged with id [0-9a-f-]{36}' "$RUNNER_TEMP/stage.log" | awk '{print $NF}' | head -1)"
+          if [ -z "$id" ]; then
+            echo "::warning::could not parse the stage id from the output - read it from this step's log"
+          fi
+          echo "stage_id=$id" >> "$GITHUB_OUTPUT"
 
-      - name: GitHub Release
+      - name: How to finish this release
+        run: |
+          {
+            echo "## Staged \`$GITHUB_REF_NAME\` — your approval is required"
+            echo
+            echo "Stage id: \`${{ steps.stage.outputs.stage_id || 'see the Stage on npm step log' }}\`"
+            echo
+            echo "Nothing is public yet. To finish:"
+            echo
+            echo "1. Approve it (2FA) — <https://www.npmjs.com/settings/0x7a76/staged>"
+            echo "   or \`npm stage approve ${{ steps.stage.outputs.stage_id }}\`."
+            echo "2. Publish the draft GitHub Release for \`$GITHUB_REF_NAME\`."
+            echo "3. Optional: refresh an installed profile —"
+            echo "   \`dsh plugin --profile desktop add dsh-extra-paths@${GITHUB_REF_NAME#v}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Draft on purpose: publish it by hand right after approving on npm.
+      - name: Draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --generate-notes
