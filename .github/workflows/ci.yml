@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # scripts/dsh-paths.mjs is strict: it resolves the @deepseek-ai/* peer types
+      # from an installed DSH, and fails when it finds none. A runner has no DSH,
+      # and the CLI package (@deepseek-ai/dsh) does not carry those peers either,
+      # so hand it a directory that holds the one peer the client half needs.
+      # The client only has an empty `import type {}` here; the host half never
+      # touches a peer type.
+      - name: Provide peer types for the client typecheck
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-peers"
+          cd "$RUNNER_TEMP/dsh-peers"
+          npm init -y >/dev/null
+          npm i --no-audit --no-fund --no-save @deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2
+          echo "DSH_APP_DIR=$RUNNER_TEMP/dsh-peers" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+
+      # lib/ is committed on purpose (profiles install this repo by path, so a
+      # clone is directly loadable). A stale build here ships old code.
+      - name: lib/ must match a fresh build
+        run: |
+          if [ -n "$(git status --porcelain -- lib/)" ]; then
+            echo "::error::lib/ is stale - run 'pnpm run build' and commit the result."
+            git --no-pager diff --stat -- lib/
+            exit 1
+          fi

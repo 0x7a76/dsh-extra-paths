@@ -1,0 +1,63 @@
+name: Release
+
+# Push a version tag (`git push origin v0.1.2`) to publish. The tag must match
+# the `version` in package.json; the job fails before publishing otherwise.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # gh release create
+  id-token: write # OIDC identity for npm trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 still ships npm 10.
+      - run: npm i -g npm@11
+
+      # Same peer-type anchor as ci.yml: `prepublishOnly` runs the typecheck-free
+      # build, but `scripts/dsh-paths.mjs` is strict and needs a directory that
+      # actually contains @deepseek-ai/*.
+      - name: Provide peer types for scripts/dsh-paths.mjs
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsh-peers"
+          cd "$RUNNER_TEMP/dsh-peers"
+          npm init -y >/dev/null
+          npm i --no-audit --no-fund --no-save @deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2
+          echo "DSH_APP_DIR=$RUNNER_TEMP/dsh-peers" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: The tag must match package.json
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have="$(node -p "require('./package.json').version")"
+          echo "tag=$GITHUB_REF_NAME package.json=$have"
+          if [ "$want" != "$have" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $have"
+            exit 1
+          fi
+
+      # No NPM_TOKEN: npm exchanges this workflow's OIDC identity for a
+      # short-lived publish credential (trusted publishing) and attaches
+      # provenance automatically. package.json's prepublishOnly runs the build
+      # and the full test suite first, so a broken tag cannot reach the registry.
+      - run: npm publish --access public
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes

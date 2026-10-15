@@ -64,6 +64,14 @@
 - 三个 tsconfig：`tsconfig.json`（宿主）、`tsconfig.client.json`（客户端）、`src/client/tsconfig.json`
   （**仅给编辑器就近匹配用**，没有它编辑器会拿宿主配置检查 `.tsx` 并报 `TS17004`）。
 - **不要提交本机绝对路径、凭据或内部令牌**；示例一律用占位符或 `~`。
+- **CI 与发布**：`.github/workflows/ci.yml` 在 push/PR 上跑验证三件套，并检查 `lib/` 相对一次全新构建有没有漂移
+  （改了 `src/` 忘记重建会直接红）；`.github/workflows/release.yml` 在推 `v*` tag 时用 **OIDC 可信发布**上 npm
+  （不需要任何 token，自动带 provenance）并建 GitHub Release。
+  ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2`，
+  再用 `DSH_APP_DIR` 指过去——因为 `scripts/dsh-paths.mjs` 是严格的，而 **`@deepseek-ai/dsh` 这个 npm 包并不含那些 peer**
+  （它 82 个依赖里一个都没有）。扩宿主线时记得同步这个锚点版本。
+  发布流程：改 `package.json` 版本（+ 本文件的版本表）→ 提交 → `git tag -a vX.Y.Z` → 推 tag；workflow 会先校验
+  tag 与 `package.json` 一致，再交给 `prepublishOnly`（build + 全量测试）后才真正上 registry。
 - 客户端改动**刷新页面即可生效**；宿主改动**必须重启 dsh**。
 
 ## 红线
