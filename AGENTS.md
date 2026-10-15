@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-extra-paths 仓库约定
 
-给**在本仓库工作的 agent** 的操作约定。用户向的说明在 `README.md`，实现记录与踩坑在
+给**在本仓库工作的 agent** 的操作约定。用户向的说明在 `README.md`（英文）/ `README.zh.md`（中文），实现记录与踩坑在
 `docs/superpowers/plans/`，本文件只写"在这里干活必须遵守什么"。
 
 ## 版本约束（最重要，先读这条）
@@ -56,8 +56,11 @@
   `import type {}` 依赖该包可解析）。
 - **测试默认跑全量**：14 个文件 / 179 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
   （服务包装器、policy 换算、模式展开、客户端适配），收敛范围反而更容易漏。
-- 文档分工：`README.md` 只面向使用者（是什么、怎么装、怎么配）；`docs/superpowers/plans/`
-  记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或 plans 里，**不要往 README 堆**。
+- 文档分工：`README.md`（英文）+ `README.zh.md`（中文）只面向使用者（是什么、怎么装、怎么配）；
+  `docs/superpowers/plans/` 记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或
+  plans 里，**不要往 README 堆**。
+- **两份 README 是等价的权威版本**（沿用 DSH 生态的 `README.md` / `README.zh.md` 约定，H1 下面放语言切换行）：
+  改任何一侧都要把另一侧带上，别让它们漂移。npm 会自动打包 `README*`，不需要写进 `files`。
 - 三个 tsconfig：`tsconfig.json`（宿主）、`tsconfig.client.json`（客户端）、`src/client/tsconfig.json`
   （**仅给编辑器就近匹配用**，没有它编辑器会拿宿主配置检查 `.tsx` 并报 `TS17004`）。
 - **不要提交本机绝对路径、凭据或内部令牌**；示例一律用占位符或 `~`。

@@ -1,80 +1,93 @@
 # dsh-extra-paths
 
-让 DSH 对一组配置的外部路径**首次尝试即可写、无需审批**：既覆盖 `write`/`edit` 工具，也覆盖 `bash` 子进程。
-插件以服务包装实现，不改 DSH 核心代码，并提供 Web 设置页与「当前工作区解析出的生效根」预览。
+English | [中文](README.zh.md)
 
-## 安装
+Let DSH **write to a set of configured external paths on the first try, with no approval**: this covers the `write`/`edit`
+tools and `bash` subprocesses alike. The plugin works by wrapping services (it does not change DSH core) and ships a Web
+settings page plus a preview of the effective roots for the current workspace.
 
-需要 DSH `0.1.5` / `0.2.0` / `0.2.1`（不在范围内会被安装闸门拒绝）。
+## Install
+
+Requires DSH `0.1.5` / `0.2.0` / `0.2.1` (outside that range the install gate refuses the package).
 
 ```bash
 pnpm install && pnpm build
-dsh plugin --profile <name> add /path/to/dsh-extra-paths   # <name>=你的 profile 名；路径=本仓库的绝对路径
+dsh plugin --profile <name> add /path/to/dsh-extra-paths   # <name> = your profile; path = absolute path to this repo
 ```
 
-装好后打开 **设置 → 插件** 里的「Extra paths」卡片，或设置左栏的「额外可写路径」。
+Then open the **Extra paths** card under **Settings → Plugins**, or **Extra writable paths** in the settings sidebar.
 
-## 配置
+## Configuration
 
-写进设置文档 `~/.dsh/settings.yaml` 的 `extra-paths` 段，或直接用设置页（**保存即生效，无需重启**）。
-下面的 `<工作根>` 是占位符，指你放项目的那个上层目录（绝对路径，或 `~/` 开头的路径）：
+Write it into the `extra-paths` section of the settings document `~/.dsh/settings.yaml`, or just use the settings page
+(**saving takes effect immediately, no restart needed**). `<work root>` below is a placeholder for the directory that
+holds your projects (an absolute path, or one starting with `~/`) — replace it with a path of your own:
 
 ```yaml
 extra-paths:
   paths:
-    - <工作根>/notes/home                      # 用默认 scope/surfaces
-    - path: ../../notes/home                   # 相对路径按「会话工作区」解析
+    - <work root>/notes/home                   # default scope/surfaces
+    - path: ../../notes/home                   # relative paths resolve against the session workspace
       scope: always-write
-    - path: <工作根>/some-repo
+    - path: <work root>/some-repo
       scope: write
-      surfaces: [fs]                           # 只允许 write/edit 工具写
+      surfaces: [fs]                           # only the write/edit tools may write here
 ```
 
-| scope | 会话 read-only | 会话 workspace-write |
+| scope | session `read-only` | session `workspace-write` |
 |---|---|---|
-| `write`（默认） | 拒绝 | 可写 |
-| `always-write` | 可写 | 可写 |
+| `write` (default) | denied | writable |
+| `always-write` | writable | writable |
 
-`surfaces`：`fs` = `write`/`edit`/str-replace 工具；`shell` = `bash` 子进程。读与执行本来就不受沙箱限制。
+`surfaces`: `fs` = the `write`/`edit`/str-replace tools; `shell` = `bash` subprocesses. Reads and execution are not
+sandboxed to begin with.
 
-### 相对路径怎么写
+### How relative paths resolve
 
-相对路径按**各会话自己的工作区**解析（设置页里可以改「基准工作区」来预览）：
+Relative paths resolve against **each session's own workspace** (the settings page has a "base workspace" field so you
+can preview this):
 
-| 写法 | 解析成 | 说明 |
+| Spelling | Resolves to | Notes |
 |---|---|---|
-| `..` | `<工作根>` | 工作区的**上一层**，该目录及其所有兄弟目录都可写 |
-| `../某仓库` | `<工作根>/某仓库` | 只放行那一个兄弟仓库（比 `..` 精确，推荐） |
-| `../../notes/home` | `<工作根>/notes/home` | 往上几层再进别的树 |
-| `~/notes/home` | 家目录下 | 与工作区无关；`~user` 不展开（与宿主一致） |
+| `..` | `<work root>` | the **parent** of the workspace; that directory and all of its siblings become writable |
+| `../some-repo` | `<work root>/some-repo` | grants exactly one sibling repository (more precise than `..`, recommended) |
+| `../../notes/home` | `<work root>/notes/home` | go up a few levels and into another tree |
+| `~/notes/home` | under your home | independent of the workspace; `~user` is not expanded (same as the host) |
 
-### 模式：按目录结构锚定（不用写死路径）
+### Patterns: anchor a grant to directory structure (no hard-coded paths)
 
-`path` 里可以用通配符描述**一组目录**，于是"路径里存在某个目录"可以变成一个条件：
+A `path` can use wildcards to describe **a group of directories**, turning "a certain directory exists somewhere in this
+path" into a condition:
 
-| 写法 | 命中（授予的根） |
+| Spelling | Matches (the granted root) |
 |---|---|
-| `<工作根>/**/.worktrees/..` | 每个**含 `.worktrees` 的仓库根**（`.worktrees` 的上级） |
-| `<工作根>/**/.worktrees/*` | 每个具体 worktree（不碰 `.git` 与主检出） |
-| `<工作根>/<某仓库>/.worktrees/*` | 某一个仓库下所有 worktree（**零遍历开销**，最推荐） |
-| `<工作根>/*/notes` | 每个仓库/项目下的 `notes` 目录 |
+| `<work root>/**/.worktrees/..` | every **repository root that contains `.worktrees`** (the parent of `.worktrees`) |
+| `<work root>/**/.worktrees/*` | each individual worktree (`.git` and the main checkout are never touched) |
+| `<work root>/<some-repo>/.worktrees/*` | every worktree of one repository (**zero traversal cost**, recommended) |
+| `<work root>/*/notes` | the `notes` directory under every repository/project |
 
-语法：`*` = 恰好一层、`**` = 最多 3 层（**只匹配真实存在的目录**，所以"必须存在 `.worktrees`"是自然结果）；
-结尾的 `..` 在**命中之后**再上移（因此 `…/.worktrees/..` 就是"`.worktrees` 的上级"，不会被词法折叠吃掉）。
+Syntax: `*` = exactly one level, `**` = at most 3 levels (**only directories that actually exist** match, so
+"`.worktrees` must exist" comes for free); a trailing `..` moves up **after** matching (so `…/.worktrees/..` is "the
+parent of `.worktrees`", rather than something lexical collapsing eats away).
 
-安全边界（都是硬约束，不是建议）：
+Safety bounds (hard constraints, not advice):
 
-- 通配符前必须有**字面量锚点**，且锚点至少两层、必须是绝对路径或 `~/` 开头 —— `/**`、`~/**`、`/srv/**` 一律拒绝
-- 遍历**不进入** `node_modules`、`.git`，`**` 也不进入隐藏目录（`.worktrees` 本身是字面量，仍在当层匹配）
-- 有界：`**` 最多 3 层、目录数 > 4096 或命中 > 256 时**整个模式不生效**（fail closed，绝不给"部分命中"这种不可预期的授权）；触顶原因会写进告警
-- 展开结果缓存 30 秒，因此**新建的 worktree 最迟 30 秒**被纳入
+- the wildcard needs a **literal anchor** before it, at least two segments long, absolute or starting with `~/` —
+  `/**`, `~/**`, `/srv/**` are refused outright
+- traversal **never enters** `node_modules` or `.git`, and `**` never enters hidden directories (`.worktrees` is a
+  literal, so it still matches at its own level)
+- bounded: `**` covers at most 3 levels, and more than 4096 directories or more than 256 matches makes **the whole
+  pattern inert** (fail closed — never a partial, unpredictable grant); the reason is reported as a warning
+- expansions are cached for 30 seconds, so a **newly created worktree is picked up within 30 seconds**
 
-设置页每行会**实时显示解析到的绝对路径**（符号链接以宿主的「解析预览」为准），模式行显示命中条数 `[生效 ×N]`
-并列出每个具体根；0 命中或被拦截都会明确说明，所以不必"先保存再看解析对不对"。
+The settings page shows the **resolved absolute path** live for every row (symlinks follow the host's canonical
+preview) and, for a pattern row, the match count as `[active ×N]` plus each concrete root below it; zero matches and
+blocked patterns are both spelled out — so there is no need to "save first and then check whether it resolved".
 
-## 已知边界
+## Known limits
 
-- 逐路径的"完全不受限"做不到：bash 沙箱是整次调用粒度。
-- 相对路径按会话工作区解析，因此同一份配置在不同工作区指向不同目录——设置页的预览会显示实际解析结果。
-- Windows 的 shell 侧不放行；`always-write` 会削弱 `read-only` 急停按钮对该路径的作用。
-- 写在工作区外的文件不会出现在 `deliverables` 的工作区变更卡片里。
+- Per-path "no restrictions at all" is not achievable: the bash sandbox works at whole-invocation granularity.
+- Relative paths resolve against the session workspace, so the same entry points at different directories in different
+  workspaces — the settings page preview shows the actual resolution.
+- The shell side is not widened on Windows; `always-write` weakens what the `read-only` stop button can do for that path.
+- Files written outside the workspace do not appear in the `deliverables` workspace-changes card.
