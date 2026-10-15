@@ -1,6 +1,6 @@
 {
   "name": "dsh-extra-paths",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "配置一组额外可写根：fs 工具与受限 shell 首次尝试即可写、无需审批，带 Web 设置页与按目录结构锚定的路径模式。 · DSH plugin: configured extra writable roots for the fs tools and the sandboxed shell, with a Web settings page and structure-anchored path patterns.",
   "type": "module",
   "main": "lib/index.js",
@@ -40,7 +40,8 @@
     "build:client": "tsdown",
     "watch:client": "tsdown --watch",
     "typecheck": "node scripts/dsh-paths.mjs && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run build && pnpm test"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
@@ -67,7 +68,7 @@
     "settings",
     "bash"
   ],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/0x7a76/dsh-extra-paths.git"

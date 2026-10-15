@@ -10,8 +10,14 @@
 需要 DSH `0.1.5` / `0.2.0` / `0.2.1`（不在范围内会被安装闸门拒绝）。
 
 ```bash
+dsh plugin --profile <name> add dsh-extra-paths            # <name>=你的 profile 名
+```
+
+想从源码安装（开发时）：
+
+```bash
 pnpm install && pnpm build
-dsh plugin --profile <name> add /path/to/dsh-extra-paths   # <name>=你的 profile 名；路径=本仓库的绝对路径
+dsh plugin --profile <name> add /path/to/dsh-extra-paths   # 路径=本仓库的绝对路径
 ```
 
 装好后打开 **设置 → 插件** 里的「Extra paths」卡片，或设置左栏的「额外可写路径」。

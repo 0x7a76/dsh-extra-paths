@@ -11,8 +11,14 @@ settings page plus a preview of the effective roots for the current workspace.
 Requires DSH `0.1.5` / `0.2.0` / `0.2.1` (outside that range the install gate refuses the package).
 
 ```bash
+dsh plugin --profile <name> add dsh-extra-paths            # <name> = your profile
+```
+
+From a checkout instead of the registry:
+
+```bash
 pnpm install && pnpm build
-dsh plugin --profile <name> add /path/to/dsh-extra-paths   # <name> = your profile; path = absolute path to this repo
+dsh plugin --profile <name> add /path/to/dsh-extra-paths   # path = absolute path to this repo
 ```
 
 Then open the **Extra paths** card under **Settings → Plugins**, or **Extra writable paths** in the settings sidebar.
