@@ -20,7 +20,8 @@ pnpm install && pnpm build
 dsh plugin --profile <name> add /path/to/dsh-extra-paths   # 路径=本仓库的绝对路径
 ```
 
-装好后打开 **设置 → 插件** 里的「Extra paths」卡片，或设置左栏的「额外可写路径」。
+装好后打开设置左栏的「额外可写路径」。在 **设置 → 插件** 里，同一页在这个插件自己那一行上：
+打开 `dsh-extra-paths` 组合包，点该行的「配置」。
 
 ## 配置
 

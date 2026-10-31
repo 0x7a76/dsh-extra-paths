@@ -1,10 +1,27 @@
 /**
  * Client half: contributes the Extra paths configuration page to the settings
- * dialog twice — as a `settings.section` nav row (the settings sidebar) and as
- * the plugin's own card (0.1.5: `settings.plugin.item`, keyed by the settings
- * namespace; 0.2.x: `plugins.item`, a list slot).
+ * dialog and to the plugin manager.
  *
- * TWO HOST GENERATIONS, ONE PAGE. The settings scope this page edits moved in
+ * THREE ENTRY POINTS, ONE PAGE — and the plugin manager asks for two different
+ * views of it. `view: 'summary'` is the one-liner it lays out in its list;
+ * anything else is the editor (`view: 'page'` on the entry's own page). Ignoring
+ * that split is what used to render the whole form inline in the plugin list,
+ * under the built-in plugins group, and pushed everything else off screen.
+ *
+ * - `settings.section` — a nav row in the settings dialog's left column. Declared
+ *   by both host generations, so this is the entry point that always exists.
+ * - 0.2.x `plugins.row.config` — a KEYED slot spelled `<bundle name>#<entry id>`.
+ *   Our own row inside the `dsh-extra-paths` bundle gains a 配置 control that
+ *   opens this page in the plugin manager. Present in every 0.2.x release
+ *   (checked against 0.2.0-rc.2 and 0.2.1-rc.5).
+ * - 0.1.5 `settings.plugin.item` — the keyed card of the older settings dialog,
+ *   keyed by the settings namespace.
+ *
+ * The 0.2.x `plugins.item` slot is deliberately NOT registered: the shipped
+ * contract reserves it for the host's own plugins ("用于官方插件", rendered in the
+ * 内置插件配置 group). A third-party bundle belongs on its own row instead.
+ *
+ * TWO HOST GENERATIONS, ONE SCOPE. The settings scope this page edits moved in
  * 0.2.0: `ctx.settingsScope` (0.1.5) is gone and replaced by `ctx.configForms`
  * — which however exposes the SAME three methods the page was written against
  * (`getSnapshot`/`subscribe`/`set`). So the page keeps its narrow `PageScope`
@@ -14,10 +31,10 @@
  * waiting forever.
  *
  * Slot keys, register shapes and the module table were taken from the RUNNING
- * version's own official occupants (`dsh-client-ui-settings-plugins`,
- * `dsh-client-ui-settings-agent-loop`) and their published contracts. A slot key
- * that nothing declares is inert under `ctx.slots.inject` (the callback never
- * runs), which is what lets one build register into both generations' cards.
+ * version's own official occupants (`dsh-client-ui-settings-agent-loop`,
+ * `dsh-client-ui-settings-shell`) and their published contracts. A slot key that
+ * nothing declares is inert under `ctx.slots.inject` (the callback never runs),
+ * which is what lets one build register into both generations.
  *
  * Every @deepseek-ai/* import here is TYPE-ONLY (erased): the runtime services
  * arrive through cordis, and react resolves from the page's module table
@@ -29,7 +46,13 @@ import * as React from 'react'
 // Type-only: documents where the two scope shapes come from. The installed apps
 // do not necessarily carry these types, and this file declares what it uses.
 import type {} from '@deepseek-ai/dsh-client-ui-settings'
-import { ExtraPathsPage, type PageScope, type WorkspaceListSurface } from './page'
+import {
+  ExtraPathsPage,
+  ExtraPathsSummary,
+  type PageScope,
+  type WorkspacesHook,
+  type WorkspaceListSurface,
+} from './page'
 
 /**
  * Client services this half needs.
@@ -42,6 +65,15 @@ export const inject = ['slots']
 
 /** The settings namespace this page edits — the one the host half registers. */
 export const NAMESPACE = 'extra-paths'
+
+/**
+ * The plugin manager's key for our row: `<bundle name>#<entry id>`.
+ *
+ * The bundle name is the package name and the row id is the entry this repo's
+ * `cordis.patch.yml` inserts; `tests/client-slots.test.ts` pins it against both
+ * files so a rename cannot silently detach the config control.
+ */
+export const ROW_KEY = 'dsh-extra-paths#extra-paths'
 
 /** The bound-settings scope 0.1.5 exposes. */
 interface LegacySettingsScope {
@@ -80,6 +112,14 @@ interface LegacyScopeSurface {
 /** The 0.2.x settings service carrier. */
 interface ConfigFormsCarrier {
   configForms: ConfigFormsSurface
+}
+
+/** What the plugin manager may hand a slot component besides the injected props. */
+interface SlotProps {
+  /** `summary` asks for the one-liner; `page` (and anything else) for the editor. */
+  view?: string
+  /** The shell's standard workspace hook, when the slot supplies one. */
+  useWorkspaces?: unknown
 }
 
 /**
@@ -145,49 +185,59 @@ export function apply(ctx: ClientContext): void {
     ctx.get('workspaces', false) as WorkspaceListSurface | undefined
   const props = (): { scope: PageScope; getWorkspaces: () => WorkspaceListSurface | undefined } =>
     ({ scope, getWorkspaces })
-  const page = (): React.ReactElement => React.createElement(ExtraPathsPage, props())
+
+  /** The editor, forwarding the shell's workspace hook when the slot carries one. */
+  const renderPage = (slotProps?: SlotProps): React.ReactElement => React.createElement(ExtraPathsPage, {
+    scope,
+    getWorkspaces,
+    // A non-function at that key must never reach a hook call.
+    useWorkspaces: typeof slotProps?.useWorkspaces === 'function'
+      ? slotProps.useWorkspaces as WorkspacesHook
+      : undefined,
+  })
+
+  /** The slot component: one line for `summary`, the editor for every other view. */
+  const card = (slotProps?: SlotProps): React.ReactElement =>
+    slotProps?.view === 'summary'
+      ? React.createElement(ExtraPathsSummary, { scope })
+      : renderPage(slotProps)
 
   // A nav row in the settings dialog's left column. `id` is ours, so the row is
   // added beside the shipped sections rather than replacing one; `order` places
-  // it after 插件 (15).
+  // it after 插件 (15). `label` is a thunk, like every official registrant: it
+  // satisfies both the string and the `() => string` form.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: NAMESPACE,
     order: 40,
-    // A thunk, like every official registrant: it satisfies both the string and
-    // the `() => string` form of `label`, and is re-read on each projection.
     label: () => '额外可写路径',
     locale: NAMESPACE,
     inject: props,
-  }, page))
+  }, card))
 
-  // The same page as this plugin's card in the 插件 section's configurable tab.
-  // 0.1.5 spells this key `settings.plugin.item` and shapes it as a KEYED slot
-  // (`key` = the settings namespace the card edits).
+  // 0.1.5's settings dialog card: a KEYED slot, keyed by the settings namespace.
   ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
     name: 'settings.plugin.item',
     key: NAMESPACE,
     locale: NAMESPACE,
     inject: props,
-  }, page))
+  }, card))
 
-  // 0.2.x renamed that slot to `plugins.item` and made it a list slot
-  // (id/order/label). An undeclared slot key is inert under `slots.inject`, so
-  // both spellings are registered and whichever host is running picks its own;
-  // official 0.2.x cards additionally wait for the host to serve the namespace,
-  // which `whileServed` does when the service offers it.
-  const registerCard = (): (() => void) => ctx.slots.inject('plugins.item', () => ctx.slots.register({
-    name: 'plugins.item',
-    id: NAMESPACE,
-    order: 40,
-    label: () => '额外可写路径',
+  // 0.2.x: our own row inside the `dsh-extra-paths` bundle. The row gains a 配置
+  // control that opens this page, instead of the editor sitting in the list.
+  const registerRow = (): (() => void) => ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+    name: 'plugins.row.config',
+    key: ROW_KEY,
     locale: NAMESPACE,
     inject: props,
-  }, page))
+  }, card))
+
+  // Only while the host actually serves our namespace: a configure control for a
+  // plugin that is not loaded would open a page with nothing behind it.
   const forms = ctx.get('configForms', false) as ConfigFormsSurface | undefined
   if (typeof forms?.whileServed === 'function' && typeof ctx.effect === 'function') {
-    ctx.effect(() => forms.whileServed?.([NAMESPACE], registerCard) ?? registerCard(), 'extra-paths: card while served')
+    ctx.effect(() => forms.whileServed?.([NAMESPACE], registerRow) ?? registerRow(), 'extra-paths: row page while served')
   } else {
-    registerCard()
+    registerRow()
   }
 }

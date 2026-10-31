@@ -91,6 +91,28 @@ function useSnapshot(scope: PageScope): { status: string; value: Section | undef
 }
 
 /**
+ * The one-liner the plugin manager shows in its list (`view: 'summary'`).
+ *
+ * The manager renders every configuration entry twice: a compact summary in the
+ * list, and the full view on the entry's own page. Rendering the editor for both
+ * is what used to fill the Plugins page with the whole form, so the summary is a
+ * separate component that can never grow one.
+ * @param props - the bound settings scope.
+ */
+export function ExtraPathsSummary({ scope }: { scope: PageScope }): React.ReactElement {
+  const { status, value } = useSnapshot(scope)
+  const rows = rowsOf(value).filter(row => row.path.trim() !== '')
+  const text = status === 'loading'
+    ? '额外可写路径：读取中…'
+    : status === 'unavailable'
+      ? '额外可写路径：宿主未提供该设置'
+      : rows.length === 0
+        ? '额外可写路径：尚未配置'
+        : `额外可写路径：${rows.length} 条 · 保存即生效，写入无需审批`
+  return <span style={styles.dim}>{text}</span>
+}
+
+/**
  * Render the page.
  * @param props - the bound settings scope, the standard workspace hook, and the
  * lazy fallback used when the composition supplies no standard props.

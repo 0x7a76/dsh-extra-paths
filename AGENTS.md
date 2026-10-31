@@ -78,14 +78,18 @@
 - 🔴 **`lib/` 是提交的构建产物**（profile 用 `link:` 安装，加载的就是它）→ 改完 `src/` **必须
   `pnpm run build` 再提交**，否则用户跑的还是旧代码。
 - 验证三件套：`pnpm run typecheck`（宿主 + 客户端两侧）、`pnpm test`、`pnpm run build`。
-- **peer 类型从哪来**：`scripts/dsh-paths.mjs` 生成 `tsconfig.peers.json`，按 `$DSH_APP_DIR/node_modules`
-  → `which dsh` 所在应用目录的 `node_modules` → `$DSH_HOME/profiles/node_modules` 的顺序，取**第一个真含
-  `@deepseek-ai/` 的目录**。桌面版把运行时装进 `app.asar`、CLI shim（`runtime/cli/bin/dsh`）旁没有
-  `node_modules`，第三条就是给它兜底的。三条都不含 `@deepseek-ai` 时**直接报错并列出试过的路径**——
-  静默写出坏映射只会拖到 `tsc -p tsconfig.client.json` 才以 TS2307 暴露（客户端有一个空的
-  `import type {}` 依赖该包可解析）。
-- **测试默认跑全量**：14 个文件 / 179 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
-  （服务包装器、policy 换算、模式展开、客户端适配），收敛范围反而更容易漏。
+- **peer 类型从哪来**：`scripts/dsh-paths.mjs` 生成 `tsconfig.peers.json`，按仓库自己的 `node_modules`
+  → `$DSH_APP_DIR/node_modules` → `which dsh` 所在应用目录的 `node_modules` → `$DSH_HOME/profiles/node_modules`
+  的顺序，取**第一个真含 peer 包（`peerDependencies` 里的 `@deepseek-ai/*`）的目录**。
+  ⚠️ 桌面版 **0.2.1 起把宿主包全部打进 `app.asar`**（asar 是单文件，tsc 读不了），而 `$DSH_HOME/profiles/node_modules`
+  下那些 npx 时代的符号链接已经**断链**——所以脚本现在按"peer 的 `package.json` 可读"判断，并把断链目录列出来，
+  不再因为"目录里有 `@deepseek-ai`"就选中它（只含 `schemastery` 这种真依赖的 `node_modules` 也不算）。
+  两个可行来源：`DSH_APP_DIR=/某目录`（该目录 `node_modules/@deepseek-ai/<peer>` 必须是真文件，
+  例如 `npm i --prefix /tmp/dsh-peers @deepseek-ai/dsh-client-ui-settings@<宿主线>`），或者
+  `pnpm add -D @deepseek-ai/dsh-client-ui-settings@<宿主线>`（会进 lockfile，与 `autoInstallPeers: false` 的取舍见
+  `pnpm-workspace.yaml`）。客户端只有一个空的 `import type {}` 依赖该包可解析。
+- **测试默认跑全量**：15 个文件 / 187 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
+  （服务包装器、policy 换算、模式展开、客户端槽位），收敛范围反而更容易漏。
 - 文档分工：`README.md`（英文）+ `README.zh.md`（中文）只面向使用者（是什么、怎么装、怎么配）；
   `docs/superpowers/plans/` 记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或
   plans 里，**不要往 README 堆**。
@@ -124,6 +128,17 @@
   值按**每次决策实时重读**（改完即生效）。别让 0.1.5 的 entry config 覆盖用户设置（那只是 `base` 层）。
 - **客户端 scope 有两代**：`ctx.settingsScope.bind`（0.1.5）→ `ctx.configForms.get`（0.2.x），接口同形，
   所以页面零改动；客户端的 `inject` **只能列两代都存在的服务**，列了不存在的会让插件永久等待激活。
-- **未声明的 slot 用 `ctx.slots.inject` 注册是静默 no-op（不报错）**，只有裸 `slots.register` 才抛——
-  所以 `settings.section` / `settings.plugin.item`(0.1.5) / `plugins.item`(0.2.x) 三个都注册，各代自取所需。
+- **插件设置页挂在哪个 slot（0.2.x 的教训）**：`plugins.item` 是**官方插件**专用的 list slot，注册进去会把第三方
+  条目塞进「内置插件配置」分组；属于第三方组合包的是 **keyed** 的 `plugins.row.config`，键为 `<包名>#<行 id>`
+  （本仓库 `dsh-extra-paths#extra-paths`，行 id 来自 `cordis.patch.yml` 的 `insert[].id`），该行由此多出一个
+  「配置 {name}」控件，打开自己的页面。组件必须按 `view` 分流：`view === 'summary'` 只画一行（插件列表里就靠它——
+  把整个表单画在这里会把列表撑开好几屏，这正是曾经的 bug），其余（`view: 'page'`）才是编辑器。
+  0.1.5 走 keyed 的 `settings.plugin.item`（键=设置命名空间），`settings.section`（设置左栏）两代都在。
+  行页给组件的是 `view: 'page'` **加一个宿主侧 `form`（`{state, mutate}`）**——我们不用它，页面照旧经
+  `configForms` 编辑命名空间（两代同一套方法）；`view: 'summary'` 只在**包没有 description 时**才会被问
+  （行页是 `description ?? renderSlot(...)`），我们的包有 description，所以实际渲染的总是编辑器。
+  **profile 的 `cordis.patch.yml` 里同名 id 的条目不会改变行的归属**：行的 rowId 只来自**组合包自己的 patch**
+  的 `insert[].id`（profile 那层只管开关状态），所以行键稳定。
+  `tests/client-slots.test.ts` 把这两个键与 `package.json` / `cordis.patch.yml` 钉在一起。
+  **未声明的 slot 用 `ctx.slots.inject` 注册是静默 no-op（不报错）**，只有裸 `slots.register` 才抛。
 - **预览路由**用 `connection.requestRejection(req)` 拒绝未认证请求（两代都有）；路由 handler 自己负责完整响应生命周期。

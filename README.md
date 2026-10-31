@@ -21,7 +21,8 @@ pnpm install && pnpm build
 dsh plugin --profile <name> add /path/to/dsh-extra-paths   # path = absolute path to this repo
 ```
 
-Then open the **Extra paths** card under **Settings → Plugins**, or **Extra writable paths** in the settings sidebar.
+Then open **Extra writable paths** in the settings sidebar. In **Settings → Plugins** the same page lives on this
+plugin's own row: open the `dsh-extra-paths` bundle, then hit that row's **Configure** button.
 
 ## Configuration
 
