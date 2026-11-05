@@ -7,7 +7,7 @@
 
 ## 安装
 
-需要 DSH `0.1.5` / `0.2.0` / `0.2.1`（不在范围内会被安装闸门拒绝）。
+需要 DSH `0.1.5` / `0.2.0` / `0.2.1` / `0.2.2`（不在范围内会被安装闸门拒绝）。
 
 ```bash
 dsh plugin --profile <name> add dsh-extra-paths            # <name>=你的 profile 名

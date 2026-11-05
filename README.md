@@ -8,7 +8,7 @@ settings page plus a preview of the effective roots for the current workspace.
 
 ## Install
 
-Requires DSH `0.1.5` / `0.2.0` / `0.2.1` (outside that range the install gate refuses the package).
+Requires DSH `0.1.5` / `0.2.0` / `0.2.1` / `0.2.2` (outside that range the install gate refuses the package).
 
 ```bash
 dsh plugin --profile <name> add dsh-extra-paths            # <name> = your profile

@@ -2,6 +2,13 @@
  * The filesystem half of the plugin: a transparent Proxy over `ctx.fs` that
  * re-stamps ONE call's policy when its target lies under a configured root.
  *
+ * The host generation decides how many mutations this surface has. 0.2.0/0.2.1
+ * fence `writeText`/`editText`; 0.2.2 additionally fences `patchText`,
+ * `deleteFile` and `moveFile` (the `apply_patch` tool and the delete/move
+ * operations). The wrapper therefore overrides every mutation the INNER service
+ * actually exposes, and never invents one: on a 0.2.1 service the three newer
+ * methods stay absent, exactly as the base class declared them.
+ *
  * Transparency rules (verified against cordis 4.0.2 by
  * spike/cordis-get-wrap-baseline.mjs): forward every property with the inner
  * value as the receiver, bind methods to the inner instance — except
@@ -24,6 +31,12 @@ export interface FsInnerLike {
     }): Promise<FsTargetLike>;
     writeText(target: FsTargetLike, content: string, expected?: unknown, signal?: AbortSignal, policy?: PolicyLike): Promise<unknown>;
     editText(target: FsTargetLike, edit: unknown, expected?: unknown, signal?: AbortSignal, policy?: PolicyLike): Promise<unknown>;
+    /** DSH 0.2.2+: apply parsed hunks (the `apply_patch` tool's surface). */
+    patchText?(target: FsTargetLike, hunks: unknown, expected?: unknown, signal?: AbortSignal, policy?: PolicyLike): Promise<unknown>;
+    /** DSH 0.2.2+: remove one regular file. */
+    deleteFile?(target: FsTargetLike, expected?: unknown, signal?: AbortSignal, policy?: PolicyLike): Promise<unknown>;
+    /** DSH 0.2.2+: publish a destination and remove the source. */
+    moveFile?(source: FsTargetLike, destination: FsTargetLike, options?: unknown, signal?: AbortSignal, policy?: PolicyLike): Promise<unknown>;
     readonly sandboxMode?: string;
 }
 /** What the wrapper needs from the plugin. */

@@ -3429,3 +3429,140 @@ cd $REPO && git push -u origin main
 **4. 与设计文档的两处有意细化（不改语义）**：
 - 设置页只暴露 `paths` 一个字段（单字段写入 = 单次原子、revision 栅栏），`defaultScope`/`defaultSurfaces` 仍由 schema 支持、可直接写 YAML，但页面不暴露——换取保存的原子性与实现简单。
 - `lib/` 按设计提交进仓库（安装方式是"按绝对路径 add"）。
+
+---
+
+# 扩宿主线：DSH 0.2.2（2026-11-05，插件 0.2.0）
+
+目标宿主线：`0.2.2`（桌面应用当时为 `0.2.2-rc.1`）。取证用的是 **DSH 源码检出**
+（HEAD `fcc0ad46`，`package.json` version `0.2.2-rc.1`，`vendor/cordis` `4.1.0`），
+而不是 app.asar（0.2.1 起宿主包在 asar 里，读不到 `lib/types`）。
+
+## 1. 取证：0.2.1-rc.5 → 0.2.2-rc.1 逐包 diff
+
+从 npm 取两版 tarball（`npm pack`），按 SOP 逐文件 diff：
+
+| 包 | 结论 |
+|---|---|
+| `dsh-fs-sandbox` | 🔴 **in-process fence 从 2 个变更扩到 5 个**：新增 `patchText`（apply_patch 工具）、`deleteFile`、`moveFile`；policy 沿用同一位置参数。 |
+| `dsh-sandbox` | 🔴 `SandboxExecutionPolicy` 新增 `additionalWritableRoots?: readonly string[]`；新增 `workspaceWritableRoots()`、`SandboxInvalidRootError`、`SandboxUnsupportedPolicyError`；`writableRoots()` 现在包含显式额外根（会校验：必须存在、是目录、非符号链接）。 |
+| `dsh-sandbox-policy` | 🔴 Config 新增 `additionalWritableRoots?: string[]`；service 暴露只读 `additionalWritableRoots`；`resolve()` 结果带上它；运行时上下文文本会列出部署级额外根。 |
+| `dsh-sandbox-local` | Seatbelt/bwrap/Landlock 改用 `workspaceWritableRoots(policy)`（workspace + 显式额外根）构造 profile；Windows ACL 在 `workspace-write` + 额外根时**抛** `SandboxUnsupportedPolicyError`。`confine(argv, policy, signal): Promise<ConfinedArgv>` 与 `ConfinedArgv` 字段（`argv`/`enforcement`/`denialSignatures`/`runnerFailureRules`）不变。 |
+| `dsh-settings` | 仅内部实现变化（`configure()` 的 owner fiber、`entry.fiber.effectiveConfig`），对外 `Config` + `volatile()` 表单契约不变。 |
+| `dsh-system-prompt` | `PromptPresentation` 拆分（tools 不再经 assemble waterfall）；`getContextOrder('SANDBOX_POLICY')` 与 `context()` 不变；新增 `TOOL_APPLY_PATCH` / `TOOL_SCHEDULE` 顺序槽。 |
+| `dsh-host-webserver` | 新增可选 resource 路由；既有 `handler` 路由与 `register({kind,path,handler})` 不变。 |
+| `dsh-fs` / `dsh-fs-local` | FileSystem 抽象新增 `patchText`/`deleteFile`/`moveFile` 与 `FsDeleteOutcome`/`FsMoveOutcome`/`FS_ERROR_CODES`、`fs/delete-intent` waterfall；`FsEditRequest` 为 `{oldString,newString,replaceAll}`。 |
+| `dsh-client-ui-settings` | `configForms`（`get`/`whileServed`/`set`）与 `settings.section` 不变；新增 `settings.section.icon` 槽。 |
+| `dsh-client-ui-plugin-manager` | `plugins.row.config` 键仍为 `<包名>#<行 id>`，owner props 仍 `{view:'summary'|'page', form?}`；`plugins.item` 仍只给官方插件。 |
+| `dsh-client-modules` / `dsh-client-connection` | `dsh.client` 清单字段不变；新增可选 asset 解析钩子。 |
+| `vendor/cordis` | `internal/get` 瀑布仍在（`vendor/cordis/src/reflect.ts:163`、`events.ts:364`）。 |
+
+结论：**没有破坏既有两代契约**；需要改的只有 fs 缝（0.2.2 新增的三个变更）与兼容声明。
+
+## 2. 代码修改（插件 0.2.0）
+
+- `src/wrap-fs.ts`：按**内层实际存在的方法**包装 —— `writeText`/`editText` 之外，若 `patchText`/`deleteFile`/`moveFile`
+  存在则一并包（0.2.1 的 fs 没有这三个方法，保持 absent，不凭空造）。单目标变更沿用 `workspaceRoot` 重盖章；
+  **`moveFile` 两端都要在配置集合内**：同一根 → 单根盖章；两个不同根 → `additionalWritableRoots`（0.2.2 才有该字段，
+  也是唯一有 `moveFile` 的宿主代；先按 base 的规则过滤"存在 + 目录 + 物理路径"，否则 fail-closed 原样委托）。
+- `src/policy.ts`：`PolicyLike` 增加可选 `additionalWritableRoots`；`syntheticPolicy` 支持一次授予多个根，并**丢弃**
+  调用方 policy 里的 `additionalWritableRoots`——`read-only` 会话里的 `always-write` 授权不能把部署级额外根一并提权。
+- `package.json`：version `0.1.1` → `0.2.0`（新宿主线 = minor）；`engines.dsh` 与每个 `@deepseek-ai/dsh-*` peer
+  同时加 `|| >=0.2.2-0 <0.2.3-0`（`@deepseek-ai/cordis: ^4.0.2` 覆盖 4.1.0，不动）。
+- 文档：`AGENTS.md` 版本表/范围块/CI 锚点；`README.md` + `README.zh.md` 的 Requires 行；
+  `.github/workflows/{ci,release}.yml` 的 peer 类型锚点 `0.2.0-rc.2` → `0.2.2-rc.1`。
+- 测试：`tests/wrap-fs.test.ts` 新增 0.2.2 五变更表面（跨根移动、负例、老宿主不造方法）；
+  `tests/grant.test.ts` 固定多根 policy 与"丢弃调用方额外根"。
+
+## 3. 实测（本机桌面宿主 = dsh 0.2.2-rc.1）
+
+1. **类型/测试/构建**：`DSH_APP_DIR=/tmp/dsh-peers`（`npm i --prefix /tmp/dsh-peers @deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1`）
+   → `dsh-paths` 指向它；`tsc -p tsconfig.json --noEmit`、`tsc -p tsconfig.client.json --noEmit`、
+   `vitest run`（15 文件 / 195 条全过）、`tsc -p tsconfig.json && tsdown`（lib/ 重build）。
+2. **安装闸门**（scratch `DSH_HOME=/tmp/dsh-home-022`，不碰用户 `~/.dsh`）：
+   `dsh plugin --profile web add <本仓库绝对路径>` → **exit 0**，profile 依赖变
+   `link:.../dsh-extra-paths`、`dsh.profile.bundles` 追加 `dsh-extra-paths`（0.1.1 时代同一条命令会被闸门拒绝）。
+3. **组合树**：`dsh --dump-config --profile web` → 出现 `- id: extra-paths` 行（带 scratch profile patch 里的 config），
+   stderr 无 patch 警告。
+4. **真实加载**：scratch `dsh web --port 0 --no-open` → 日志无 `disabling profile plugin row` /
+   `is incompatible`；HTML 预载列表含 `dsh-extra-paths/client.js`（客户端半页）；HTTP 请求
+   `/extra-paths/resolved` 返回 `400 cwd is required`，而 `/extra-paths/nope` 404 —— 宿主半页确实挂上了。
+5. **五变更对真实 base**：`/tmp/dsh-peers` 装真实 `@deepseek-ai/dsh-fs-sandbox@0.2.2-rc.1` + `dsh-fs-local`，把本仓库
+   构建出的 `wrapFs` 包在真实 `SandboxedFileSystem` 上，给 fake `sandboxPolicy`（workspace = 临时目录、配置两个额外根）：
+   `writeText`/`editText`/`patchText`/`deleteFile`/`moveFile`（跨根）在额外根下全部成功；同操作在根外全部
+   `FS_SANDBOX_DENIED`；workspace 普通写入不受影响（10/10）。
+6. **home 层本地构建行（用户当前用法）**：把 `~/.dsh/cordis.patch.yml`（含本地路径 insert 行 + 原配置）软链到
+   scratch home，profile 用 desktop 的副本（node_modules 软链、**无** `compatibility.json` 豁免）启动：
+   无禁用/不兼容告警，客户端模块与预览路由均在 —— 即 0.2.0 构建**不再需要精确版本豁免**。
+   随后删掉了 0.2.2-rc.1 试跑时临时授予的 `~/.dsh/profiles/desktop/compatibility.json`。
+
+## 4. 范围矩阵（`includePrerelease: true`，与闸门一致）
+
+`>=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0`
+
+| 版本 | 结果 |
+|---|---|
+| 0.1.5-rc.1 / 0.1.5 | PASS |
+| 0.2.0-0 / 0.2.0-rc.1 / 0.2.0 | PASS |
+| 0.2.1-rc.5 / 0.2.1 | PASS |
+| 0.2.2-alpha.2 / 0.2.2-rc.1 / 0.2.2 | PASS |
+| 0.1.4、0.1.6-alpha.2、0.2.3-0、0.3.0 | reject |
+
+## 5. 注意 / 遗留
+
+- 0.2.2 的 base fs 已原生支持 `additionalWritableRoots`。本插件**没有**改成"只往 policy 里塞额外根"：
+  `sandbox-policy` 的额外根是**部署配置**（不支持用户按会话实时编辑），而本插件的设置页/实时重读要继续走
+  fs + argv 包装；`additionalWritableRoots` 只在 `moveFile` 的跨根场景里使用（本插件是那三个新变更的唯一包装点）。
+- Windows：`moveFile` 跨根会走 `additionalWritableRoots`，但 fs fence 在 Windows 同样接受该字段（只有
+  `sandbox-local` 的 windows-acl 拒绝，而 shell 侧我们本来就 fail-closed）。shell 的 argv 方言测试仍以
+  `tests/argv.test.ts` 的 provider 夹具为准（本会话的 bash 侧不能跑 `sandbox-exec`）。
+
+
+---
+
+# 缺陷：删掉的路径点保存又回来（2026-11-06，并入 0.2.0）
+
+现象：0.2.2-rc.1 桌面版里在插件设置页删一条 path、点保存，页面刷新后那条又出现，且没有任何报错。
+
+## 根因（两层，缺一不可）
+
+1. **宿主层**：0.2.x 的 `ConfigEditor.edit()` 写完 profile patch 后会 `readProfilePatches(...)` 重新组合
+   （bundle 层 + profile patch + **home patch** + `--patch`）并比对 `effective.config === next`；同一 id 被
+   home 层或命令行覆盖时抛
+   `Configuration for "X" is overridden by a home patch or command-line overlay`，**文件不写**。
+   这正是当时 `~/.dsh/cordis.patch.yml` 里那条 `- id: extra-paths config:` 覆盖造成的——宿主按设计拒绝
+   写入被更高层覆盖的命名空间。
+2. **客户端层**：`configForms.get(ns).set()` 对"被拒绝"返回 **`false`**（不是 reject、没有消息）。
+   本插件原来的 `lateBoundScope` 用 `.then(() => undefined)` 把布尔丢掉，页面 `save()` 只看 promise
+   是否 resolve → 误当成功、清掉 dirty；随后宿主 mirror 恢复旧值 → "删除的路径又回来了"。
+
+## 复现（隔离环境，真实宿主）
+
+用 desktop profile 副本 + 真实 home patch 软链启动 `runProfile`（脚本调用宿主服务，无需 UI）：
+`settings.describe()` 得 6 条；`settings.mutate('extra-paths', [{op:'set', path:['paths'], value: 前5条}], revision)`
+→ 抛上面的 "overridden by a home patch"；describe 仍 6 条。把 home patch 的覆盖行删掉后再 mutate →
+**ok**，describe 5 条、profile patch 落盘 5 条。说明宿主层**每次写都重读 patch 文件**，运行中删掉覆盖即可恢复可写。
+
+## 修复
+
+- `src/client/index.tsx`：`lateBoundScope().set` 把 `false` 转成 `new Error(SAVE_REFUSED_MESSAGE)`，
+  0.2.x 分支不再 `.then(() => undefined)`；0.1.5 的 `void` 结果仍视为成功。
+- `src/client/page.tsx`：`PageScope.set` 返回 `Promise<boolean | void>`；`save()` 对 `false` 显示
+  `SAVE_REFUSED_MESSAGE`（说明可能被 home/CLI 覆盖），错误文案取 `Error.message`；失败时保持 dirty，
+  不再静默回滚。
+- 环境：`~/.dsh/cordis.patch.yml` 里删掉 `- id: extra-paths` 覆盖（配置留在
+  `profiles/desktop/cordis.patch.yml`，即设置页真正写入的层）；home 层只保留 MCP 的 insert。
+
+## 验证
+
+- 单测：`tests/client-slots.test.ts` 新增 4 条（false → rejection、true 透传、void 兼容、未绑定时 resolve）；
+  全量 15 文件 / 199 条通过；宿主+客户端 typecheck 通过；`lib/client.js` 重新构建。
+- 宿主实跑：无 home 覆盖时 `settings.mutate(...)` 返回 ok、effective 5 条、profile patch 5 条。
+- 运行中把 home 覆盖删掉再保存也可行（宿主写路径重读 patch 文件），**该修复不要求重启**；
+  客户端 bundle 刷新页面即加载新版。
+
+## 结论 / 约定
+
+- **插件配置放 profile patch**（`~/.dsh/profiles/desktop/cordis.patch.yml`）；home patch 里不要覆盖同一个 id，
+  否则设置页按设计只读（并会报上面那条错误，现在客户端会把它显示出来）。
+- 同类坑对其它插件同样成立：`configForms.set()` 的 `false` 必须当失败处理。

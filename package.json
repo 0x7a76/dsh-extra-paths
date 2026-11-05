@@ -1,6 +1,6 @@
 {
   "name": "dsh-extra-paths",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "配置一组额外可写根：fs 工具与受限 shell 首次尝试即可写、无需审批，带 Web 设置页与按目录结构锚定的路径模式。 · DSH plugin: configured extra writable roots for the fs tools and the sandboxed shell, with a Web settings page and structure-anchored path patterns.",
   "type": "module",
   "main": "lib/index.js",
@@ -79,19 +79,19 @@
   },
   "engines": {
     "node": ">=20",
-    "dsh": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0"
+    "dsh": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-fs": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-sandbox": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-sandbox-policy": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-settings": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-fs-sandbox": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0"
+    "@deepseek-ai/dsh-fs": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-sandbox": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-sandbox-policy": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-settings": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-fs-sandbox": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-fs-sandbox": {

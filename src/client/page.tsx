@@ -36,8 +36,23 @@ interface Section {
 export interface PageScope {
   getSnapshot(): { status: 'loading' | 'ready' | 'unavailable'; value: Section | undefined; revision?: number }
   subscribe(listener: () => void): () => void
-  set(field: string, value: unknown): Promise<void>
+  /**
+   * Persist one field. The 0.2.x host answers `false` when it REFUSES the write
+   * (verified refusal: a home patch or command-line overlay owns this
+   * namespace — DSH's config editor refuses settings-page writes then); the
+   * page must surface that instead of treating the promise as saved. The
+   * 0.1.5 scope resolves `void` on success.
+   */
+  set(field: string, value: unknown): Promise<boolean | void>
 }
+
+/**
+ * Shown when the host refuses a write. The 0.2.x client API returns `false`
+ * rather than a message, so the page owns this explanation.
+ */
+export const SAVE_REFUSED_MESSAGE =
+  '保存被宿主拒绝：该配置可能被 home patch 或命令行覆盖（设置页只写 profile 的 cordis.patch.yml）。'
+  + '请删掉 ~/.dsh/cordis.patch.yml 里同 id 的覆盖，或直接改 profile patch 后重启。'
 
 /** Workspace list surface (the lazy fallback when no standard hook is supplied). */
 export interface WorkspaceListSurface {
@@ -203,8 +218,13 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
     setBusy(true)
     setError(undefined)
     void scope.set('paths', payloadOf(rows))
-      .then(() => { setDirty(false) })
-      .catch((cause: unknown) => { setError(String(cause)) })
+      .then((accepted) => {
+        // `false` is the host's refusal (a legacy 0.1.5 scope resolves void).
+        // Treating it as saved is what made a deleted row snap back silently.
+        if (accepted === false) setError(SAVE_REFUSED_MESSAGE)
+        else setDirty(false)
+      })
+      .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) })
       .finally(() => { setBusy(false) })
   }
   const hostEntriesOf = (path: string): readonly PreviewEntry[] =>

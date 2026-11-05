@@ -37,7 +37,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/dsh-peers"
           cd "$RUNNER_TEMP/dsh-peers"
           npm init -y >/dev/null
-          npm i --no-audit --no-fund --no-save @deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2
+          npm i --no-audit --no-fund --no-save @deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1
           echo "DSH_APP_DIR=$RUNNER_TEMP/dsh-peers" >> "$GITHUB_ENV"
 
       - run: pnpm install --frozen-lockfile

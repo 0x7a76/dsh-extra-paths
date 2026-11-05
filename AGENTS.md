@@ -9,7 +9,8 @@
 
 | 插件版本 | 含义 | 支持的 DSH 线 |
 |---|---|---|
-| `0.1.1` | 双语 README、MIT 许可、发布防呆（当前） | 0.1.5 / 0.2.0 / 0.2.1 |
+| `0.2.0` | 支持 0.2.2 线；补齐 0.2.2 新增的三类 fs 变更（patch/delete/move）（当前） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
+| `0.1.1` | 双语 README、MIT 许可、发布防呆 | 0.1.5 / 0.2.0 / 0.2.1 |
 
 - **minor** = 支持了新的宿主线或不兼容调整；**patch** = 修 bug / 文档 / 元数据。
 - **禁止**把版本号写成宿主号（`0.2.1.1` 四段非法，`0.2.1-1` 会排在官方 `0.2.1` 之前，两者都已否决）。
@@ -21,7 +22,7 @@
 **拒绝安装**。当前值：
 
 ```
->=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0
+>=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0
 ```
 
 `-0` 后缀是刻意的：写 `<0.1.6` 会放行 `0.1.6-alpha.2`，写 `<0.2.2` 会放行 `0.2.2-alpha.1`。
@@ -88,7 +89,7 @@
   例如 `npm i --prefix /tmp/dsh-peers @deepseek-ai/dsh-client-ui-settings@<宿主线>`），或者
   `pnpm add -D @deepseek-ai/dsh-client-ui-settings@<宿主线>`（会进 lockfile，与 `autoInstallPeers: false` 的取舍见
   `pnpm-workspace.yaml`）。客户端只有一个空的 `import type {}` 依赖该包可解析。
-- **测试默认跑全量**：15 个文件 / 187 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
+- **测试默认跑全量**：15 个文件 / 199 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
   （服务包装器、policy 换算、模式展开、客户端槽位），收敛范围反而更容易漏。
 - 文档分工：`README.md`（英文）+ `README.zh.md`（中文）只面向使用者（是什么、怎么装、怎么配）；
   `docs/superpowers/plans/` 记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或
@@ -102,7 +103,7 @@
   （改了 `src/` 忘记重建会直接红）；`.github/workflows/release.yml` 在推 `v*` tag 时用 **OIDC** 把版本
   **提交到 npm 暂存区**（不需要任何 token，**不会直接上线**），等维护者 2FA 批准后才出现在 registry，
   同时建一个 draft GitHub Release。
-  ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.0-rc.2`，
+  ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1`，
   再用 `DSH_APP_DIR` 指过去——因为 `scripts/dsh-paths.mjs` 是严格的，而 **`@deepseek-ai/dsh` 这个 npm 包并不含那些 peer**
   （它 82 个依赖里一个都没有）。扩宿主线时记得同步这个锚点版本。
   发布的完整步骤见上方「发布一个版本的 SOP」。
@@ -123,6 +124,20 @@
 - **包装器必须镜像内层的同步性**：0.1.5 的 `sandbox.confine` 是**同步**的（调用方直接读 `.argv`），
   0.2.x 是 `async`（调用方 await）。写成 `async` 会让 0.1.5 上每条被限制的命令崩在
   `Cannot read properties of undefined (reading '0')`。
+- **fs 缝在 0.2.2 变宽了**：`dsh-fs-sandbox` 的 in-process fence 从两个变更（`writeText`/`editText`）扩到
+  **五个**（新增 `patchText`/`deleteFile`/`moveFile`，对应 apply_patch、删除与移动），且 policy 里新增
+  `additionalWritableRoots`（一次调用可授予多个显式根）。`wrap-fs` 必须**按内层实际存在的方法**逐个包
+  （老宿主没有这三个方法）、`moveFile` 两端都要在配置集合内；跨根移动用 `additionalWritableRoots` 表达
+  （0.2.2 才有该字段，也是唯一有 `moveFile` 的宿主代）。`policy.ts` 的 `syntheticPolicy` 在提权时会**丢掉**调用方
+  的 `additionalWritableRoots`，避免 `read-only` 会话里的 `always-write` 授权把部署根一起放进来。
+- **设置页写入会被 home/CLI 覆盖拦下**：0.2.x 的 config editor 先写 profile patch，再用
+  `readProfilePatches` 重新组合（含 home patch 和命令行 `--patch`）并比对；同一个 id 被 home 层/命令行覆盖时
+  直接抛 `Configuration for "X" is overridden by a home patch or command-line overlay`，**不落盘**。
+  客户端 `configForms.get(ns).set()` 对这种拒绝返回 `false`（不是异常）——页面必须当失败显示，否则会清掉
+  dirty 再重绘宿主旧值（"删掉的路径又回来"就是它）。本插件的 `lateBoundScope` 把 `false` 转成带说明的
+  rejection（`SAVE_REFUSED_MESSAGE`，`src/client/page.tsx`）。因此**插件配置应放 profile patch**；
+  home 层只放跨 profile 的 insert/覆盖别的东西。实测：把 home 覆盖从磁盘删掉后，下一次保存时宿主会重新组合，
+  **不需要重启**就能恢复可写。
 - **宿主 settings 有两代**：0.1.5 是 `ctx.settings.register` + scope；0.2.x **没有 register**——
   命名空间就是 profile 条目、schema 是本模块导出的 `Config`（字段必须 `.volatile()`，否则框架不生成表单）、
   值按**每次决策实时重读**（改完即生效）。别让 0.1.5 的 entry config 覆盖用户设置（那只是 `base` 层）。

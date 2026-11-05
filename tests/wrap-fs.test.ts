@@ -239,3 +239,116 @@ describe('wrapFs', () => {
     expect(wrapped).toBeInstanceOf(Object)
   })
 })
+
+// ── DSH 0.2.2: three more fenced mutations ─────────────────────────────────
+// `patchText` (the apply_patch tool), `deleteFile` and `moveFile` joined the
+// in-process fence in 0.2.2. The wrapper must cover them structurally: present
+// on the inner service → overridden with the same grant translation; absent
+// (0.2.1) → left absent. `moveFile` is the only two-target mutation.
+
+/** A stub carrying every mutation the 0.2.2 fs fence declares. */
+function mutationStub() {
+  const calls: { method: string; target?: FsTargetLike; destination?: FsTargetLike; policy: unknown }[] = []
+  const record = (method: string, target: FsTargetLike, policy: unknown, destination?: FsTargetLike) =>
+    calls.push(destination === undefined ? { method, target, policy } : { method, target, destination, policy })
+  const inner = {
+    sandboxMode: 'workspace-write',
+    async resolve(path: string): Promise<FsTargetLike> {
+      return { targetKey: path, displayPath: path }
+    },
+    async writeText(target: FsTargetLike, _content: string, _expected?: unknown, _signal?: unknown, policy?: unknown) {
+      record('writeText', target, policy)
+      return { ok: true }
+    },
+    async editText(target: FsTargetLike, _edit: unknown, _expected?: unknown, _signal?: unknown, policy?: unknown) {
+      record('editText', target, policy)
+      return { ok: true }
+    },
+    async patchText(target: FsTargetLike, _hunks: unknown, _expected?: unknown, _signal?: unknown, policy?: unknown) {
+      record('patchText', target, policy)
+      return { ok: true }
+    },
+    async deleteFile(target: FsTargetLike, _expected?: unknown, _signal?: unknown, policy?: unknown) {
+      record('deleteFile', target, policy)
+      return { ok: true }
+    },
+    async moveFile(source: FsTargetLike, destination: FsTargetLike, _options?: unknown, _signal?: unknown, policy?: unknown) {
+      record('moveFile', source, policy, destination)
+      return { ok: true }
+    },
+  } as FsInnerLike
+  return { inner, calls }
+}
+
+describe('wrapFs on the 0.2.2 five-mutation surface', () => {
+  it('re-stamps patchText and deleteFile exactly like writeText', async () => {
+    const { inner, calls } = mutationStub()
+    const wrapped = wrapFs(inner, deps())
+    const policy = { mode: 'workspace-write', workspaceRoot: base } as const
+    await wrapped.patchText!(target(join(notes, 'a.md')), [{ hunk: 1 }], undefined, undefined, policy)
+    await wrapped.deleteFile!(target(join(notes, 'a.md')), undefined, undefined, policy)
+    expect(calls.map(call => [call.method, call.policy])).toEqual([
+      ['patchText', { mode: 'workspace-write', workspaceRoot: notes }],
+      ['deleteFile', { mode: 'workspace-write', workspaceRoot: notes }],
+    ])
+  })
+
+  it('leaves a delete outside every configured root untouched', async () => {
+    const { inner, calls } = mutationStub()
+    const wrapped = wrapFs(inner, deps())
+    const policy = { mode: 'workspace-write', workspaceRoot: base } as const
+    await wrapped.deleteFile!(target(join(base, 'other.md')), undefined, undefined, policy)
+    expect(calls[0]?.policy).toBe(policy)
+  })
+
+  it('re-stamps a move whose two ends share one configured root', async () => {
+    const { inner, calls } = mutationStub()
+    const wrapped = wrapFs(inner, deps())
+    await wrapped.moveFile!(target(join(notes, 'a.md')), target(join(notes, 'b.md')), undefined, undefined, {
+      mode: 'workspace-write',
+      workspaceRoot: base,
+    })
+    expect(calls[0]?.policy).toEqual({ mode: 'workspace-write', workspaceRoot: notes })
+  })
+
+  it('grants BOTH roots for a move between two configured roots (0.2.2 additionalWritableRoots)', async () => {
+    const cache = join(base, 'cache')
+    mkdirSync(cache, { recursive: true })
+    const { inner, calls } = mutationStub()
+    const config = normalizeConfig({ paths: [{ path: notes, scope: 'write' }, { path: cache, scope: 'write' }] })
+    const wrapped = wrapFs(inner, { readConfig: () => config, fallbackPolicy: () => undefined })
+    await wrapped.moveFile!(target(join(notes, 'a.md')), target(join(cache, 'b.md')), undefined, undefined, {
+      mode: 'workspace-write',
+      workspaceRoot: base,
+    })
+    expect(calls[0]?.policy).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: notes,
+      additionalWritableRoots: [cache],
+    })
+  })
+
+  it('does not elevate a move when one end is outside the configured roots', async () => {
+    const cache = join(base, 'cache')
+    mkdirSync(cache, { recursive: true })
+    const { inner, calls } = mutationStub()
+    const config = normalizeConfig({ paths: [{ path: notes, scope: 'always-write' }] })
+    const wrapped = wrapFs(inner, { readConfig: () => config, fallbackPolicy: () => undefined })
+    const policy = { mode: 'read-only', workspaceRoot: base } as const
+    await wrapped.moveFile!(target(join(notes, 'a.md')), target(join(cache, 'b.md')), undefined, undefined, policy)
+    expect(calls[0]?.policy).toBe(policy)
+  })
+
+  it('only overrides the mutations the running host declares (0.2.1 keeps three absent)', () => {
+    const { inner } = innerStub()
+    const wrapped = wrapFs(inner, deps())
+    expect(wrapped.patchText).toBeUndefined()
+    expect(wrapped.deleteFile).toBeUndefined()
+    expect(wrapped.moveFile).toBeUndefined()
+    const { inner: full } = mutationStub()
+    const modern = wrapFs(full, deps())
+    expect(typeof modern.patchText).toBe('function')
+    expect(typeof modern.deleteFile).toBe('function')
+    expect(typeof modern.moveFile).toBe('function')
+  })
+})

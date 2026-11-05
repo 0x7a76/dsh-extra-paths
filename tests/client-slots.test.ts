@@ -2,8 +2,8 @@ import * as React from 'react'
 import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { apply, NAMESPACE, ROW_KEY } from '../src/client/index.js'
-import { ExtraPathsSummary, type PageScope } from '../src/client/page.js'
+import { apply, lateBoundScope, NAMESPACE, ROW_KEY } from '../src/client/index.js'
+import { ExtraPathsSummary, SAVE_REFUSED_MESSAGE, type PageScope } from '../src/client/page.js'
 
 /**
  * The slot registrations had no test at all, and the plugin list ended up
@@ -142,5 +142,43 @@ describe('ExtraPathsSummary', () => {
       scope: scope(undefined, 'loading'),
     }))
     expect(html).toContain('读取中')
+  })
+})
+
+// ── 0.2.2 host refusal → visible error, never a silent snap-back ─────────────
+// The config editor REFUSES a settings-page write when a home patch or a
+// command-line overlay owns the namespace, and the client API answers `false`
+// (no message). The page used to drop that boolean, clear `dirty`, and repaint
+// the host value — a deleted row simply reappeared. These pin the propagation.
+
+describe('lateBoundScope save results', () => {
+  const boundScope = (set: PageScope['set']): PageScope => {
+    const { scope, attach } = lateBoundScope()
+    attach({
+      getSnapshot: () => ({ status: 'ready', value: { paths: [] } }),
+      subscribe: () => () => {},
+      set,
+    })
+    return scope
+  }
+
+  it('turns a host refusal (`false`) into a rejection carrying the explanation', async () => {
+    const scope = boundScope(async () => false)
+    await expect(scope.set('paths', [])).rejects.toThrow(SAVE_REFUSED_MESSAGE)
+  })
+
+  it('passes an accepted write through', async () => {
+    const scope = boundScope(async () => true)
+    await expect(scope.set('paths', [])).resolves.toBe(true)
+  })
+
+  it('treats the 0.1.5 scope (resolves void) as accepted', async () => {
+    const scope = boundScope(async () => {})
+    await expect(scope.set('paths', [])).resolves.toBeUndefined()
+  })
+
+  it('resolves without a bound scope, so a page mounted early cannot hang', async () => {
+    const { scope } = lateBoundScope()
+    await expect(scope.set('paths', [])).resolves.toBeUndefined()
   })
 })

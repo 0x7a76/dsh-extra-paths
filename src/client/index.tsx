@@ -49,6 +49,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings'
 import {
   ExtraPathsPage,
   ExtraPathsSummary,
+  SAVE_REFUSED_MESSAGE,
   type PageScope,
   type WorkspacesHook,
   type WorkspaceListSurface,
@@ -141,7 +142,16 @@ export function lateBoundScope(): { scope: PageScope; attach: (next: PageScope |
         listeners.add(listener)
         return () => { listeners.delete(listener) }
       },
-      set: (field, value) => real?.set(field, value) ?? Promise.resolve(),
+      // A `false` answer is a host REFUSAL, not a saved value. Reject so the
+      // page's error path shows it, and so `dirty` never clears on a refused
+      // write (the deleted row would otherwise reappear as if nothing happened).
+      set: (field, value) => {
+        if (real === undefined) return Promise.resolve()
+        return real.set(field, value).then((accepted) => {
+          if (accepted === false) throw new Error(SAVE_REFUSED_MESSAGE)
+          return accepted
+        })
+      },
     },
     attach: (next) => {
       if (next === undefined) return
@@ -173,7 +183,8 @@ export function apply(ctx: ClientContext): void {
     attach({
       getSnapshot: () => configForms.get(NAMESPACE).getSnapshot(),
       subscribe: (listener) => configForms.get(NAMESPACE).subscribe(listener),
-      set: (field, value) => configForms.get(NAMESPACE).set(field, value).then(() => undefined),
+      // Keep the host's boolean: `false` is a refusal the page must show.
+      set: (field, value) => configForms.get(NAMESPACE).set(field, value),
     })
   })
 
