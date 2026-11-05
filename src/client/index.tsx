@@ -36,6 +36,15 @@
  * nothing declares is inert under `ctx.slots.inject` (the callback never runs),
  * which is what lets one build register into both generations.
  *
+ * LOCALIZED COPY FOLLOWS THE HOST'S OWN LANGUAGE SELECTION. The client half
+ * registers its `zh`/`en` dictionaries under this plugin's namespace through
+ * `ctx.locale.register`, and every slot registration declares `locale: NAMESPACE`
+ * so the renderer hands each page render the framework `t` seat. Switching
+ * Settings → General → Language therefore switches this page too, without a
+ * reload; languages without a dictionary fall back to English (the host's
+ * documented baseline), and a host without a locale seat (0.1.5 slots, tests)
+ * falls back to the built-in Chinese copy.
+ *
  * Every @deepseek-ai/* import here is TYPE-ONLY (erased): the runtime services
  * arrive through cordis, and react resolves from the page's module table
  * (see dsh.client in package.json).
@@ -46,10 +55,11 @@ import * as React from 'react'
 // Type-only: documents where the two scope shapes come from. The installed apps
 // do not necessarily carry these types, and this file declares what it uses.
 import type {} from '@deepseek-ai/dsh-client-ui-settings'
+import { en, zh, type Translate } from './locales'
 import {
   ExtraPathsPage,
   ExtraPathsSummary,
-  SAVE_REFUSED_MESSAGE,
+  saveRefusedError,
   type PageScope,
   type WorkspacesHook,
   type WorkspaceListSurface,
@@ -58,11 +68,12 @@ import {
 /**
  * Client services this half needs.
  *
- * Only `slots`: the settings scope is fetched late-bound below, because the
+ * `locale` ships in every supported host generation and backs the framework `t`
+ * seat; the settings scope itself is fetched late-bound below, because the
  * 0.1.5 (`settingsScope`) and 0.2.x (`configForms`) providers differ and an
  * `inject` entry for a service that never appears would block activation.
  */
-export const inject = ['slots']
+export const inject = ['slots', 'locale']
 
 /** The settings namespace this page edits — the one the host half registers. */
 export const NAMESPACE = 'extra-paths'
@@ -94,11 +105,18 @@ interface ConfigFormsSurface {
   whileServed?(namespaces: readonly string[], register: (served: ReadonlySet<string>) => () => void): () => void
 }
 
+/** The host locale service surface used here (0.1.5 and 0.2.x share it). */
+interface LocaleSurface {
+  register(namespace: string, dictionaries: Readonly<Record<string, Readonly<Record<string, string>>>>): unknown
+  bind(namespace: string): Translate
+}
+
 /** Minimal client context surface (the real types come from the merges above). */
 interface ClientContext {
   get(name: string, strict?: boolean): unknown
   inject(names: readonly string[], callback: (scope: never) => void): unknown
   effect?(callback: () => unknown, label?: string): unknown
+  locale: LocaleSurface
   slots: {
     inject(key: string, callback: () => unknown): () => void
     register(options: Record<string, unknown>, component: () => unknown): () => void
@@ -121,6 +139,8 @@ interface SlotProps {
   view?: string
   /** The shell's standard workspace hook, when the slot supplies one. */
   useWorkspaces?: unknown
+  /** The framework-injected translate seat (declared by `locale:` on the entry). */
+  t?: unknown
 }
 
 /**
@@ -148,7 +168,7 @@ export function lateBoundScope(): { scope: PageScope; attach: (next: PageScope |
       set: (field, value) => {
         if (real === undefined) return Promise.resolve()
         return real.set(field, value).then((accepted) => {
-          if (accepted === false) throw new Error(SAVE_REFUSED_MESSAGE)
+          if (accepted === false) throw saveRefusedError()
           return accepted
         })
       },
@@ -169,6 +189,14 @@ export function lateBoundScope(): { scope: PageScope; attach: (next: PageScope |
  */
 export function apply(ctx: ClientContext): void {
   const { scope, attach } = lateBoundScope()
+
+  // Register the plugin's dictionaries before anything can render, then bind the
+  // namespace: slot entries that declared `locale: NAMESPACE` receive this `t`
+  // (the renderer re-derives it on every locale switch).
+  const registerLocales = (): unknown => ctx.locale.register(NAMESPACE, { zh, en })
+  if (typeof ctx.effect === 'function') ctx.effect(registerLocales, 'extra-paths: locales')
+  else registerLocales()
+  const t = ctx.locale.bind(NAMESPACE)
 
   // 0.1.5: a scope bound to our namespace by the settings UI package.
   ctx.inject(['settingsScope'], (child) => {
@@ -200,6 +228,7 @@ export function apply(ctx: ClientContext): void {
   /** The editor, forwarding the shell's workspace hook when the slot carries one. */
   const renderPage = (slotProps?: SlotProps): React.ReactElement => React.createElement(ExtraPathsPage, {
     scope,
+    t: typeof slotProps?.t === 'function' ? slotProps.t as Translate : undefined,
     getWorkspaces,
     // A non-function at that key must never reach a hook call.
     useWorkspaces: typeof slotProps?.useWorkspaces === 'function'
@@ -210,7 +239,10 @@ export function apply(ctx: ClientContext): void {
   /** The slot component: one line for `summary`, the editor for every other view. */
   const card = (slotProps?: SlotProps): React.ReactElement =>
     slotProps?.view === 'summary'
-      ? React.createElement(ExtraPathsSummary, { scope })
+      ? React.createElement(ExtraPathsSummary, {
+        scope,
+        t: typeof slotProps.t === 'function' ? slotProps.t as Translate : undefined,
+      })
       : renderPage(slotProps)
 
   // A nav row in the settings dialog's left column. `id` is ours, so the row is
@@ -221,7 +253,7 @@ export function apply(ctx: ClientContext): void {
     name: 'settings.section',
     id: NAMESPACE,
     order: 40,
-    label: () => '额外可写路径',
+    label: () => t('navLabel'),
     locale: NAMESPACE,
     inject: props,
   }, card))

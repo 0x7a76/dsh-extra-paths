@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { apply, lateBoundScope, NAMESPACE, ROW_KEY } from '../src/client/index.js'
+import { en, zh, type ExtraPathsLocaleKey, type Translate } from '../src/client/locales.js'
 import { ExtraPathsSummary, SAVE_REFUSED_MESSAGE, type PageScope } from '../src/client/page.js'
 
 /**
@@ -18,10 +19,18 @@ interface Registered {
   component: (props?: Record<string, unknown>) => React.ReactElement
 }
 
-/** A context that records registrations and serves no services at all. */
-function fakeContext(configForms?: unknown): { ctx: never; registered: Registered[]; effects: string[] } {
+/** A context that records registrations and the locale dictionaries it saw. */
+function fakeContext(configForms?: unknown): {
+  ctx: never
+  registered: Registered[]
+  effects: string[]
+  locales: { namespace: string; dictionaries: Record<string, Record<string, string>> }[]
+  bound: string[]
+} {
   const registered: Registered[] = []
   const effects: string[] = []
+  const locales: { namespace: string; dictionaries: Record<string, Record<string, string>> }[] = []
+  const bound: string[] = []
   const ctx = {
     // Every looked-up service is absent: the page has to survive that.
     get: (name: string) => (name === 'configForms' ? configForms : undefined),
@@ -29,6 +38,16 @@ function fakeContext(configForms?: unknown): { ctx: never; registered: Registere
     effect: (callback: () => unknown, label?: string) => {
       effects.push(label ?? '')
       callback()
+    },
+    locale: {
+      register: (namespace: string, dictionaries: Record<string, Record<string, string>>) => {
+        locales.push({ namespace, dictionaries })
+        return () => {}
+      },
+      bind: (namespace: string) => {
+        bound.push(namespace)
+        return ((key: ExtraPathsLocaleKey) => `t:${key}`) as Translate
+      },
     },
     slots: {
       inject: (slot: string, callback: () => unknown) => { callback(); return () => {} },
@@ -42,7 +61,7 @@ function fakeContext(configForms?: unknown): { ctx: never; registered: Registere
       },
     },
   }
-  return { ctx: ctx as never, registered, effects }
+  return { ctx: ctx as never, registered, effects, locales, bound }
 }
 
 function scope(value: unknown, status: 'ready' | 'loading' = 'ready'): PageScope {
@@ -111,6 +130,57 @@ describe('client slot registrations', () => {
     const page = renderToStaticMarkup(React.createElement(card!, { view: 'page' }))
     expect(page).toContain('基准工作区')
     expect(page).toContain('添加工作区上一层（..）')
+  })
+
+  it('registers the zh/en dictionaries for its namespace and binds that namespace', () => {
+    const { ctx, locales, bound } = fakeContext()
+    apply(ctx)
+    expect(bound).toEqual([NAMESPACE])
+    expect(locales.map(entry => entry.namespace)).toEqual([NAMESPACE])
+    const dictionaries = locales[0]?.dictionaries ?? {}
+    expect(Object.keys(dictionaries).sort()).toEqual(['en', 'zh'])
+    expect(Object.keys(dictionaries.zh ?? {}).length).toBeGreaterThan(30)
+    expect(Object.keys(dictionaries.en ?? {}).length).toBe(Object.keys(dictionaries.zh ?? {}).length)
+  })
+
+  it('localizes the nav label through the bound translate function', () => {
+    const { ctx, registered } = fakeContext()
+    apply(ctx)
+    const label = bySlot(registered, 'settings.section')?.options.label
+    expect(typeof label).toBe('function')
+    // The fake bind maps every key to `t:<key>`; a hard-coded Chinese label
+    // would not change with the host language.
+    expect((label as () => string)()).toBe('t:navLabel')
+  })
+
+  it('hands the framework t seat down to both views', () => {
+    const { ctx, registered } = fakeContext()
+    apply(ctx)
+    const card = bySlot(registered, 'plugins.row.config')?.component
+    const t = ((key: ExtraPathsLocaleKey) => `⟦${key}⟧`) as Translate
+
+    // The fake context binds no settings scope, so the summary is in its
+    // loading state; any translated key proves the seat reached the component.
+    const summary = renderToStaticMarkup(React.createElement(card!, { view: 'summary', t }))
+    expect(summary).toContain('⟦summaryLoading⟧')
+
+    const page = renderToStaticMarkup(React.createElement(card!, { view: 'page', t }))
+    expect(page).toContain('⟦baseWorkspace⟧')
+    expect(page).not.toContain('基准工作区')
+  })
+
+  it('keeps every locale dictionary non-empty and complete', () => {
+    const { ctx, locales } = fakeContext()
+    apply(ctx)
+    const dictionaries = locales[0]?.dictionaries ?? {}
+    const keys = Object.keys(zh).sort() as ExtraPathsLocaleKey[]
+    for (const locale of ['zh', 'en'] as const) {
+      expect(Object.keys(dictionaries[locale] ?? {}).sort()).toEqual(keys)
+      for (const key of keys) expect((dictionaries[locale] ?? {})[key]?.trim()).not.toBe('')
+    }
+    // The two baseline dictionaries carry the same keys; `en` is the host's
+    // fallback for any other UI language.
+    expect(Object.keys(en).sort()).toEqual(keys)
   })
 
   it('keeps the row key equal to the package name and the patch entry id', () => {

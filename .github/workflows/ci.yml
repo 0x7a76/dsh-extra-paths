@@ -23,6 +23,11 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # The repository is public: no machine-local home paths, personal
+      # identifiers or credential-looking strings may reach tracked files.
+      - name: Repository hygiene
+        run: node scripts/check-sanitized.mjs
+
       # scripts/dsh-paths.mjs is strict: it resolves the @deepseek-ai/* peer types
       # from an installed DSH, and fails when it finds none. A runner has no DSH,
       # and the CLI package (@deepseek-ai/dsh) does not carry those peers either,

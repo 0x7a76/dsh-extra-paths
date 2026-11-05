@@ -1,7 +1,12 @@
 /**
- * The Extra paths settings page: one card per configured path, Chinese labels,
+ * The Extra paths settings page: one card per configured path, localized copy,
  * a LIVE lexical resolution per row against a base workspace, quick add
  * buttons, and the host's authoritative preview of the DRAFT (unsaved rows).
+ *
+ * Copy follows the host's own language selection: every string comes from the
+ * dictionaries registered by `../client/index` through the framework-injected
+ * `t` seat, and the Chinese dictionary is the built-in fallback for a host that
+ * supplies no seat at all (0.1.5 slots, unit tests).
  *
  * The base workspace comes from the shell's standard `useWorkspaces` hook when
  * the slot supplies it — a snapshot read once during activation would be
@@ -12,6 +17,7 @@
  */
 
 import * as React from 'react'
+import { fallbackTranslate, zh, type Translate } from './locales'
 import { resolveLexically } from './paths'
 import { fetchPreview, type PreviewEntry, type PreviewResult } from './preview'
 import { css, styles } from './styles'
@@ -47,12 +53,28 @@ export interface PageScope {
 }
 
 /**
- * Shown when the host refuses a write. The 0.2.x client API returns `false`
- * rather than a message, so the page owns this explanation.
+ * Marker carried by a refusal raised in the late-bound scope. The page maps it
+ * to localized copy instead of showing the scope's internal message.
  */
-export const SAVE_REFUSED_MESSAGE =
-  '保存被宿主拒绝：该配置可能被 home patch 或命令行覆盖（设置页只写 profile 的 cordis.patch.yml）。'
-  + '请删掉 ~/.dsh/cordis.patch.yml 里同 id 的覆盖，或直接改 profile patch 后重启。'
+export const SAVE_REFUSED_CODE = 'extra-paths/save-refused'
+
+/**
+ * Message carried by that marker error (Chinese). The page shows the localized
+ * `saveRefused` copy; this text only reaches logs/tests.
+ */
+export const SAVE_REFUSED_MESSAGE = zh.saveRefused
+
+/** Build the refusal error the page recognizes. */
+export function saveRefusedError(): Error {
+  const error = new Error(SAVE_REFUSED_MESSAGE)
+  ;(error as Error & { code?: string }).code = SAVE_REFUSED_CODE
+  return error
+}
+
+/** Whether a rejected save is the host refusing the write. */
+export function isSaveRefused(cause: unknown): boolean {
+  return (cause as { code?: unknown } | undefined)?.code === SAVE_REFUSED_CODE
+}
 
 /** Workspace list surface (the lazy fallback when no standard hook is supplied). */
 export interface WorkspaceListSurface {
@@ -72,16 +94,10 @@ function itemsOf(value: unknown): readonly { path?: string }[] {
   return Array.isArray(items) ? (items as readonly { path?: string }[]) : []
 }
 
-const STATUS_LABEL: Record<Status, string> = { ok: '生效', missing: '目录不存在', rejected: '已拒绝' }
 const STATUS_STYLE: Record<Status, React.CSSProperties> = {
   ok: styles.statusOk,
   missing: styles.statusMissing,
   rejected: styles.statusRejected,
-}
-
-const SCOPE_LABEL: Record<Scope, string> = {
-  write: '随会话模式（read-only 下拒绝）',
-  'always-write': '始终可写（read-only 下也允许）',
 }
 
 function rowsOf(section: Section | undefined): Row[] {
@@ -112,31 +128,35 @@ function useSnapshot(scope: PageScope): { status: string; value: Section | undef
  * list, and the full view on the entry's own page. Rendering the editor for both
  * is what used to fill the Plugins page with the whole form, so the summary is a
  * separate component that can never grow one.
- * @param props - the bound settings scope.
+ * @param props - the bound settings scope and the host's translate seat.
  */
-export function ExtraPathsSummary({ scope }: { scope: PageScope }): React.ReactElement {
+export function ExtraPathsSummary({ scope, t }: { scope: PageScope; t?: Translate }): React.ReactElement {
+  const translate = t ?? fallbackTranslate
   const { status, value } = useSnapshot(scope)
   const rows = rowsOf(value).filter(row => row.path.trim() !== '')
   const text = status === 'loading'
-    ? '额外可写路径：读取中…'
+    ? translate('summaryLoading')
     : status === 'unavailable'
-      ? '额外可写路径：宿主未提供该设置'
+      ? translate('summaryUnavailable')
       : rows.length === 0
-        ? '额外可写路径：尚未配置'
-        : `额外可写路径：${rows.length} 条 · 保存即生效，写入无需审批`
+        ? translate('summaryEmpty')
+        : translate('summaryCount', { count: rows.length })
   return <span style={styles.dim}>{text}</span>
 }
 
 /**
  * Render the page.
- * @param props - the bound settings scope, the standard workspace hook, and the
- * lazy fallback used when the composition supplies no standard props.
+ * @param props - the bound settings scope, the host's translate seat, the
+ * standard workspace hook, and the lazy fallback used when the composition
+ * supplies no standard props.
  */
-export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
+export function ExtraPathsPage({ scope, t, getWorkspaces, useWorkspaces }: {
   scope: PageScope
+  t?: Translate
   getWorkspaces?: () => WorkspaceListSurface | undefined
   useWorkspaces?: WorkspacesHook
 }): React.ReactElement {
+  const tr = t ?? fallbackTranslate
   const snapshot = useSnapshot(scope)
 
   // The hook re-renders this page whenever the registry moves; the fallback is a
@@ -221,10 +241,12 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
       .then((accepted) => {
         // `false` is the host's refusal (a legacy 0.1.5 scope resolves void).
         // Treating it as saved is what made a deleted row snap back silently.
-        if (accepted === false) setError(SAVE_REFUSED_MESSAGE)
+        if (accepted === false) setError(tr('saveRefused'))
         else setDirty(false)
       })
-      .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : String(cause)) })
+      .catch((cause: unknown) => {
+        setError(isSaveRefused(cause) ? tr('saveRefused') : cause instanceof Error ? cause.message : String(cause))
+      })
       .finally(() => { setBusy(false) })
   }
   const hostEntriesOf = (path: string): readonly PreviewEntry[] =>
@@ -239,12 +261,12 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
       <style>{css}</style>
 
       <div style={styles.intro}>
-        这些路径在会话工作区之外也可以写，<strong>不需要审批</strong>；写工具与终端都按下面的「作用面」生效。
-        相对路径按「基准工作区」解析——执法时用的是<strong>各会话自己的工作区</strong>，所以同一份配置在不同会话会指向不同目录。
+        {tr('introBefore')}<strong>{tr('introNoApproval')}</strong>{tr('introAfter')}
+        {tr('introRuleBefore')}<strong>{tr('introRuleEmphasis')}</strong>{tr('introRuleAfter')}
       </div>
 
       <div style={styles.baseRow}>
-        <span style={styles.cardTitle}>基准工作区</span>
+        <span style={styles.cardTitle}>{tr('baseWorkspace')}</span>
         {picker
           ? (
             <select
@@ -253,7 +275,7 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
               value={known ? typedBase : ''}
               onChange={event => { setCwdPinned(true); setCwd(event.target.value) }}
             >
-              {known ? null : <option value={typedBase}>{typedBase === '' ? '（未选择）' : typedBase}</option>}
+              {known ? null : <option value={typedBase}>{typedBase === '' ? tr('notSelected') : typedBase}</option>}
               {candidates.map(path => <option key={path} value={path}>{path}</option>)}
             </select>
           )
@@ -262,32 +284,32 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
               className="xp-input"
               style={styles.baseField}
               value={cwd}
-              placeholder="绝对路径，或以 ~/ 开头（例如 ~/projects）"
+              placeholder={tr('basePlaceholder')}
               onChange={event => { setCwdPinned(true); setCwd(event.target.value) }}
             />
           )}
         {candidates.length > 0
           ? (
             <button type="button" className="xp-link" onClick={() => { setManualBase(!manualBase) }}>
-              {picker ? '手填' : '从列表选'}
+              {picker ? tr('manualBase') : tr('pickBase')}
             </button>
           )
           : null}
-        <span style={styles.dim}>仅用于预览与行内解析</span>
+        <span style={styles.dim}>{tr('baseHint')}</span>
       </div>
 
       <div style={styles.toolbar}>
         <button type="button" className="xp-button xp-button-on" disabled={busy || !dirty} onClick={save}>
-          {busy ? '保存中…' : '保存'}
+          {busy ? tr('saving') : tr('save')}
         </button>
-        <button type="button" className="xp-button" onClick={() => { append('') }}>添加路径</button>
-        <button type="button" className="xp-button" onClick={() => { append('..') }}>添加工作区上一层（..）</button>
-        <button type="button" className="xp-button" disabled={!dirty} onClick={reset}>放弃修改</button>
-        <span style={styles.dim}>{dirty ? '有未保存的修改' : '已与配置同步'}</span>
+        <button type="button" className="xp-button" onClick={() => { append('') }}>{tr('addPath')}</button>
+        <button type="button" className="xp-button" onClick={() => { append('..') }}>{tr('addParent')}</button>
+        <button type="button" className="xp-button" disabled={!dirty} onClick={reset}>{tr('discard')}</button>
+        <span style={styles.dim}>{dirty ? tr('dirty') : tr('synced')}</span>
       </div>
 
       {rows.length === 0
-        ? <div style={styles.dim}>还没有配置路径：用上面的「添加路径」或「添加工作区上一层（..）」开始。</div>
+        ? <div style={styles.dim}>{tr('emptyPaths')}</div>
         : null}
 
       {rows.map((row, index) => {
@@ -304,12 +326,13 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
           // focus after the first character. Position is a stable identity here.
           <div style={styles.card} key={index}>
             <div style={styles.cardHead}>
-              <span style={styles.cardTitle}>路径 {index + 1}</span>
+              <span style={styles.cardTitle}>{tr('rowTitle', { index: index + 1 })}</span>
               <span style={styles.cardHeadRight}>
                 {hostEntry !== undefined
                   ? (
                     <span style={STATUS_STYLE[hostEntry.status]}>
-                      [{STATUS_LABEL[hostEntry.status]}{hostMatches.length > 1 ? ` ×${hostMatches.length}` : ''}]
+                      [{tr(hostEntry.status === 'ok' ? 'statusOk' : hostEntry.status === 'missing' ? 'statusMissing' : 'statusRejected')}
+                      {hostMatches.length > 1 ? ` ×${hostMatches.length}` : ''}]
                     </span>
                   )
                   : null}
@@ -318,7 +341,7 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
                   className="xp-link"
                   onClick={() => { setDirty(true); setRows(current => current.filter((_, i) => i !== index)) }}
                 >
-                  删除
+                  {tr('delete')}
                 </button>
               </span>
             </div>
@@ -326,67 +349,67 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
               className="xp-input"
               style={styles.pathInput}
               value={row.path}
-              placeholder="~/projects/notes/home、../某仓库、..（上一层）、~/projects/**/.worktrees/..（模式）"
+              placeholder={tr('pathPlaceholder')}
               onChange={event => { update(index, { path: event.target.value }) }}
             />
             <div style={styles.resolvedRow}>
               {patternRow
                 ? (
                   <span style={styles.dim}>
-                    模式：由宿主按目录结构展开
+                    {tr('patternResolved')}
                     {' '}
                     {hostMatches.length > 0
-                      ? `当前命中 ${hostMatches.length} 个目录（见下方预览）`
-                      : '（暂无命中，或被展开上限拦截）'}
+                      ? tr('patternMatches', { count: hostMatches.length })
+                      : tr('patternNoMatches')}
                   </span>
                 )
                 : resolved === undefined
                 ? <span style={styles.dim}>
                   {row.path.trim() === ''
-                    ? '填入路径后这里会显示解析结果'
+                    ? tr('resolvePendingEmpty')
                     : typedBase === ''
-                      ? '相对路径需要基准工作区：请在上面选择或填写'
+                      ? tr('resolveNeedsBase')
                       : !usableBase
-                        ? '基准工作区需要绝对路径，或以 ~/ 开头（例如 ~/projects）'
-                        : '~ 需要宿主的家目录（第一次预览返回后即可解析）'}
+                        ? tr('resolveBaseInvalid')
+                        : tr('resolveNeedsHome')}
                 </span>
                 : (
                   <>
-                    <span style={styles.dim}>解析为</span>
+                    <span style={styles.dim}>{tr('resolvedAs')}</span>
                     <code style={styles.code}>{resolved}</code>
                     {hostEntry !== undefined && hostEntry.resolved !== resolved
-                      ? <span style={styles.dim}>（宿主解析：{hostEntry.resolved}）</span>
+                      ? <span style={styles.dim}>{tr('hostResolved', { path: hostEntry.resolved })}</span>
                       : null}
                   </>
                 )}
             </div>
             <div style={styles.controlsRow}>
               <label style={styles.field}>
-                生效模式
+                {tr('mode')}
                 <select
                   className="xp-select"
                   value={row.scope}
                   onChange={event => { update(index, { scope: event.target.value as Scope }) }}
                 >
-                  <option value="write">{SCOPE_LABEL.write}</option>
-                  <option value="always-write">{SCOPE_LABEL['always-write']}</option>
+                  <option value="write">{tr('scopeWrite')}</option>
+                  <option value="always-write">{tr('scopeAlways')}</option>
                 </select>
               </label>
               <div style={styles.pills}>
-                <span style={styles.dim}>作用面</span>
+                <span style={styles.dim}>{tr('surfaces')}</span>
                 <button
                   type="button"
                   className={row.surfaces.includes('fs') ? 'xp-button xp-button-on' : 'xp-button xp-button-off'}
                   onClick={() => { toggleSurface(index, 'fs') }}
                 >
-                  写工具
+                  {tr('surfaceFs')}
                 </button>
                 <button
                   type="button"
                   className={row.surfaces.includes('shell') ? 'xp-button xp-button-on' : 'xp-button xp-button-off'}
                   onClick={() => { toggleSurface(index, 'shell') }}
                 >
-                  终端
+                  {tr('surfaceShell')}
                 </button>
               </div>
             </div>
@@ -398,27 +421,29 @@ export function ExtraPathsPage({ scope, getWorkspaces, useWorkspaces }: {
 
       <div style={styles.panel}>
         <div style={styles.panelHead}>
-          解析预览{dirty ? '（含未保存修改）' : ''}
-          {preview !== undefined ? <span style={styles.dim}>生效根 {preview.effective.length} 条</span> : null}
+          {tr('previewTitle')}{dirty ? tr('previewDirty') : ''}
+          {preview !== undefined ? <span style={styles.dim}>{tr('previewEffective', { count: preview.effective.length })}</span> : null}
         </div>
         {typedBase === ''
-          ? <div style={styles.dim}>先在上面选择或填写「基准工作区」，这里就会显示宿主解析出的生效根。</div>
+          ? <div style={styles.dim}>{tr('previewNoBase')}</div>
           : !usableBase
-            ? <div style={styles.dim}>基准工作区需要绝对路径，或以 ~/ 开头（例如 ~/projects）；相对路径不能当基准用。</div>
+            ? <div style={styles.dim}>{tr('previewBadBase')}</div>
             : base === ''
-              ? <div style={styles.dim}>正在展开 ~：宿主的家目录会在第一次预览返回后给出。</div>
+              ? <div style={styles.dim}>{tr('previewExpandingHome')}</div>
               : preview === undefined
-                ? <div style={styles.dim}>预览不可用（宿主没提供该路由、连接还没就绪，或基准工作区被宿主拒绝）。</div>
+                ? <div style={styles.dim}>{tr('previewUnavailable')}</div>
                 : (
                   <>
                     {preview.entries.length === 0
-                      ? <div style={styles.dim}>还没有可解析的路径。</div>
+                      ? <div style={styles.dim}>{tr('previewEmpty')}</div>
                       : preview.entries.map((entry, index) => (
                         <div style={styles.entry} key={`${index}-${entry.raw}`}>
-                          <span style={STATUS_STYLE[entry.status]}>[{STATUS_LABEL[entry.status]}]</span>
+                          <span style={STATUS_STYLE[entry.status]}>
+                            [{tr(entry.status === 'ok' ? 'statusOk' : entry.status === 'missing' ? 'statusMissing' : 'statusRejected')}]
+                          </span>
                           <code style={styles.code}>{entry.raw}</code>
                           <span style={styles.dim}>→</span>
-                          <code style={styles.code}>{entry.resolved === '' ? '（未解析）' : entry.resolved}</code>
+                          <code style={styles.code}>{entry.resolved === '' ? tr('unresolved') : entry.resolved}</code>
                         </div>
                       ))}
                     {preview.warnings.map(warning => <div style={styles.warn} key={warning}>{warning}</div>)}

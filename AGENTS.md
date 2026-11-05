@@ -9,7 +9,8 @@
 
 | 插件版本 | 含义 | 支持的 DSH 线 |
 |---|---|---|
-| `0.2.0` | 支持 0.2.2 线；补齐 0.2.2 新增的三类 fs 变更（patch/delete/move）（当前） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
+| `0.2.1` | 设置页文案跟随 DSH 语言选择（zh/en 字典 + 框架 `t` seat）（当前） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
+| `0.2.0` | 支持 0.2.2 线；补齐 0.2.2 新增的三类 fs 变更（patch/delete/move）；设置页保存被拒时显式报错 | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
 | `0.1.1` | 双语 README、MIT 许可、发布防呆 | 0.1.5 / 0.2.0 / 0.2.1 |
 
 - **minor** = 支持了新的宿主线或不兼容调整；**patch** = 修 bug / 文档 / 元数据。
@@ -89,7 +90,7 @@
   例如 `npm i --prefix /tmp/dsh-peers @deepseek-ai/dsh-client-ui-settings@<宿主线>`），或者
   `pnpm add -D @deepseek-ai/dsh-client-ui-settings@<宿主线>`（会进 lockfile，与 `autoInstallPeers: false` 的取舍见
   `pnpm-workspace.yaml`）。客户端只有一个空的 `import type {}` 依赖该包可解析。
-- **测试默认跑全量**：15 个文件 / 199 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
+- **测试默认跑全量**：16 个文件 / 210 条 / 约 2 秒。本仓库的改动几乎都落在跨模块契约上
   （服务包装器、policy 换算、模式展开、客户端槽位），收敛范围反而更容易漏。
 - 文档分工：`README.md`（英文）+ `README.zh.md`（中文）只面向使用者（是什么、怎么装、怎么配）；
   `docs/superpowers/plans/` 记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或
@@ -98,7 +99,21 @@
   改任何一侧都要把另一侧带上，别让它们漂移。npm 会自动打包 `README*`，不需要写进 `files`。
 - 三个 tsconfig：`tsconfig.json`（宿主）、`tsconfig.client.json`（客户端）、`src/client/tsconfig.json`
   （**仅给编辑器就近匹配用**，没有它编辑器会拿宿主配置检查 `.tsx` 并报 `TS17004`）。
-- **不要提交本机绝对路径、凭据或内部令牌**；示例一律用占位符或 `~`。
+- 🔴 **公开仓库，禁止提交任何本机 / 个人信息（含 `docs/` 与 plans，不只是代码）**：
+  - **本机绝对路径**：`/Users/<name>`、`/home/<name>`、本机 DSH 源码检出路径、profile 副本路径——文档与命令示例
+    一律写占位符（`<repo>`、`<dsh 源码检出>`、`~`、`/tmp/...`）。测试夹具只能用虚构名（`/Users/someone` 等）
+    并登记进 guard 的 allowlist；
+  - **本机标识**：用户名、主机名（`*.local`）、时区/地区/IP/端口（通用 `127.0.0.1` 文档示例除外）、机器配置细节；
+  - **个人与账号信息**：真实姓名、个人邮箱、账号 ID。**唯一例外是包必需的公开身份**：`0x7a76`
+    只允许出现在 LICENSE 版权、`package.json` 的 repository/homepage/bugs、workflows 的 staged 链接与 AGENTS 的
+    发布说明里；
+  - **凭据**：token、API key、密码、私钥、`.env` / `.npmrc` / `.git-credentials`、SSH key——任何形式都不行；
+  - **本机残留**：`*.bak-*` 备份、`.dsh-probe/`、`.probe-*`、`.xpaths-*`、tarball/日志等。
+  **提交前必须**跑 `pnpm run check:sanitized`（`scripts/check-sanitized.mjs`，CI 两个 workflow 已强制）：
+  它扫描所有 tracked 文件，命中 home 路径 / 个人标识与邮箱 / `.local` 主机名 / GitHub、npm、云厂商 token / 私钥块即失败。
+  2026-11 的 0.2.0 记录曾把本机源码检出路径写进 plans，最后靠重写历史才清掉——别再犯。
+  **提交作者信息**（维护者的公开 commit 身份与提交邮箱）会随公开仓库可见，这是本仓库有意保留的 maintainer 身份，
+  不在本限制范围内；除它之外不得出现其他个人邮箱与姓名。
 - **CI 与发布**：`.github/workflows/ci.yml` 在 push/PR 上跑验证三件套，并检查 `lib/` 相对一次全新构建有没有漂移
   （改了 `src/` 忘记重建会直接红）；`.github/workflows/release.yml` 在推 `v*` tag 时用 **OIDC** 把版本
   **提交到 npm 暂存区**（不需要任何 token，**不会直接上线**），等维护者 2FA 批准后才出现在 registry，
@@ -138,6 +153,13 @@
   rejection（`SAVE_REFUSED_MESSAGE`，`src/client/page.tsx`）。因此**插件配置应放 profile patch**；
   home 层只放跨 profile 的 insert/覆盖别的东西。实测：把 home 覆盖从磁盘删掉后，下一次保存时宿主会重新组合，
   **不需要重启**就能恢复可写。
+- **客户端文案跟随宿主语言**：所有页面 copy 必须走 `src/client/locales.ts` 的 `zh` / `en` 字典（两个字典的**键集**
+  与每个键的 `{placeholder}` 集必须一致，`tests/locales.test.ts` 钉住）；`apply()` 里
+  `ctx.locale.register(NAMESPACE, { zh, en })` 并 `ctx.locale.bind(NAMESPACE)`；每个 slot 注册都带
+  `locale: NAMESPACE`，组件从 slot props 取框架注入的 `t`（语言切换时渲染器换新函数并重渲染，无需 reload）。
+  没有 `t` seat 的宿主（0.1.5 slots、单测）回落到内置中文 `fallbackTranslate`；其它界面语言由宿主的语言链回落到
+  `en`。客户端 `inject` 必须列 `locale`（0.1.5-rc.3 起 web-app 都挂载 `@deepseek-ai/dsh-client-locale`），
+  `package.json` 的 `dsh.client.inject` 也要声明该客户端模块，保证 locale 模块先于本插件加载。
 - **宿主 settings 有两代**：0.1.5 是 `ctx.settings.register` + scope；0.2.x **没有 register**——
   命名空间就是 profile 条目、schema 是本模块导出的 `Config`（字段必须 `.volatile()`，否则框架不生成表单）、
   值按**每次决策实时重读**（改完即生效）。别让 0.1.5 的 entry config 覆盖用户设置（那只是 `base` 层）。

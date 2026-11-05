@@ -27,6 +27,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Repository hygiene
+        run: node scripts/check-sanitized.mjs
+
       # Trusted publishing needs npm >= 11.5.1; Node 22 still ships npm 10.
       - run: npm i -g npm@11
 

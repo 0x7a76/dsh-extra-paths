@@ -3566,3 +3566,52 @@ cd $REPO && git push -u origin main
 - **插件配置放 profile patch**（`~/.dsh/profiles/desktop/cordis.patch.yml`）；home patch 里不要覆盖同一个 id，
   否则设置页按设计只读（并会报上面那条错误，现在客户端会把它显示出来）。
 - 同类坑对其它插件同样成立：`configForms.set()` 的 `false` 必须当失败处理。
+
+---
+
+# 0.2.1：设置页多语言，跟随 DSH 自己的语言选择（2026-11-06）
+
+需求：页面文案不再写死中文，改为跟随 DSH 的语言选择（设置 → 常规 → 语言）；版本 0.2.1。
+
+## 取证：宿主 locale 契约（逐版本核对 npm 包 + 源码）
+
+- 客户端服务名 `ctx.locale`，宿主插件 `@deepseek-ai/dsh-client-locale`：
+  `register(ns, dicts | locale, dict)`、`bind(ns)`、`getSnapshot()`（`active`/`locales`/`revision`）、`subscribe()`、
+  `setLocale()`。0.1.5-rc.3、0.2.1-rc.5、0.2.2-rc.1 三份 npm 包 API 一致。
+- `0.1.5-rc.3` 的 `@deepseek-ai/dsh-web-app` 的 `cordis.patch.yml` 里已有 `locale` 行 → 0.1.5 web UI 也挂载该服务，
+  所以客户端 `inject` 可以安全地加上 `locale`（符合"只列两代都存在"的约定）。
+- **对象形式**：0.1.5/0.2.1/0.2.2 已发布包的 `.d.ts` 仍写三参 `register(ns, locale, dict)`，但运行时实现是
+  `typeof localeOrDicts === 'string' ? [[locale, dict]] : Object.entries(localeOrDicts)`，**同时接受对象形式**；
+  DSH 源码 README 与官方插件（如 `ui-settings-agent-loop`）都用 `register(ns, { zh, en, ... })`。故采用对象形式。
+- 框架 `t` seat：slot 注册带 `locale: NS` 时，渲染器按 (namespace, revision) 派生 `t` 并通过标准 props 下发；
+  语言切换/revision 变化会重渲染（无需 reload）。`{name}` 占位符语法与运行时的 `replace(/\{(\w+)\}/g, ...)` 一致。
+- 语言回落：`zh`、`en` 是基线（字典必须两套都全）；其它内置语言（ja/de/ru…）的语言链回落到 `en`。
+
+## 实现
+
+- 新增 `src/client/locales.ts`：`ExtraPathsLocaleKey` 联合（57 个键）、`en` / `zh` 两套字典、
+  `format()`（`{name}` 占位符，未知名字原样保留）、`fallbackTranslate`（无 `t` seat 时用中文）。
+- `src/client/page.tsx`：所有文案改走 `tr(...)`；`ExtraPathsPage` / `ExtraPathsSummary` 接受可选 `t`；没有 `t` 时
+  用 `fallbackTranslate`（单测与 0.1.5 slots 的退化路径）。保存被拒标记改为
+  `saveRefusedError()`/`SAVE_REFUSED_CODE`，页面用本地化的 `saveRefused` 文案展示。
+- `src/client/index.tsx`：`inject = ['slots', 'locale']`；`apply()` 里 `ctx.effect(() => ctx.locale.register(NAMESPACE, { zh, en }))`
+  + `const t = ctx.locale.bind(NAMESPACE)`；三个 slot 注册保持 `locale: NAMESPACE`，`card` 把 slot props 的 `t`
+  透传给页面/摘要；导航 label 改为 `() => t('navLabel')`。
+- `package.json`：版本 `0.2.1`；`dsh.client.inject` 增加 `@deepseek-ai/dsh-client-locale`（保证 locale 客户端模块
+  先于本插件加载）。兼容范围不变（0.1.5 / 0.2.0 / 0.2.1 / 0.2.2）。
+- 文档：AGENTS 版本表/测试数/i18n 约束；中英 README 各加一段"页面跟随 DSH 语言选择"。
+
+## 验证
+
+- 新增 `tests/locales.test.ts`：两套字典键集一致、每个键的 `{placeholder}` 集合一致、`format()` 行为、
+  无 `t` 时中文回落、英文页面/摘要渲染（断言 `Base workspace` / `Add the workspace parent (..)` / `Path 1` /
+  `Extra writable paths: 2 saved`）。
+- `tests/client-slots.test.ts`：注册的字典命名空间与 `bind` 目标都是 `NAMESPACE`；导航 label 走绑定函数
+  （假 `t` 返回 `t:<key>`）；slot props 的 `t` 能到 summary 与 page（假 `t` 返回 `⟦key⟧`，不再出现中文）。
+- 全量：**16 个文件 / 210 条全绿**；宿主 + 客户端 typecheck 通过；`tsc + tsdown` 重建 `lib/`（client bundle
+  35.86 kB → 44.17 kB，含两套字典）。
+
+## 发布注意
+
+- `0.2.0` 已由 tag `v0.2.0` 触发过 Release workflow 并 **staged 在 npm 暂存区**（尚未批准）；本次 0.2.1 是新的
+  一次 patch 发布，推 `v0.2.1` 会再 stage 一个版本。0.2.0 的暂存条目可以选择 Reject（如果只想发 0.2.1）。

@@ -24,6 +24,9 @@ dsh plugin --profile <name> add /path/to/dsh-extra-paths   # path = absolute pat
 Then open **Extra writable paths** in the settings sidebar. In **Settings → Plugins** the same page lives on this
 plugin's own row: open the `dsh-extra-paths` bundle, then hit that row's **Configure** button.
 
+The page follows DSH's own language selection (**Settings → General → Language**): it ships Simplified Chinese and
+English copy, and every other UI language falls back to English.
+
 ## Configuration
 
 Write it into the `extra-paths` section of the settings document `~/.dsh/settings.yaml`, or just use the settings page
