@@ -14,6 +14,7 @@ import {
 } from '../src/client/page.js'
 import { resolveBase, hostViewOf, type Rule, type TextError } from '../src/client/paths.js'
 import type { PreviewCapabilities, PreviewEntry, PreviewResult } from '../src/client/preview.js'
+import { css } from '../src/client/styles.js'
 
 /**
  * The page renders in two places (the plugin row's page view and the settings
@@ -212,6 +213,9 @@ describe('TextModeEditor — bulk editing', () => {
   it('renders the current rules in the textarea, with the syntax hint and NO actions of its own', () => {
     const html = render('~/a\n../b | read')
     expect(html).toContain('xp-textarea')
+    expect(html).toContain('wrap="off"')
+    expect(html).toContain('white-space:pre')
+    expect(html).toContain('overflow-x:auto')
     expect(html).toContain('~/a\n../b | read')
     expect(html).toContain('One rule per line')
     // Built-in examples document the supported forms right next to the input.
@@ -269,6 +273,29 @@ describe('PreviewPanel — host answer, collapsed by default', () => {
     expect(html).toContain('Resolution preview')
     expect(html).toContain('1 effective writable roots')
     expect(html).not.toContain('/home/user/a')
+  })
+
+  it('keeps a long resolved path on one line (horizontal scroll, no wrapping)', () => {
+    const long = '/home/user/work/example-repo/' + 'deeply-nested-directory-name/'.repeat(8)
+    const html = renderToStaticMarkup(React.createElement(PreviewPanel, {
+      tr: enTranslate,
+      expanded: true,
+      typedBase: '/home/user/work/example-repo',
+      base,
+      preview: {
+        ...preview,
+        entries: [{ raw: '~/a', resolved: long, access: 'write', surfaces: ['fs'], status: 'ok' }],
+        writable: [long],
+      },
+      dirty: false,
+    }))
+    // The path is a single token: `code` never wraps, and the row scrolls.
+    expect(html).toContain('white-space:nowrap')
+    expect(html).toContain(long)
+    // The stylesheet (injected once by the page) guarantees the scroll instead of
+    // a wrap: both halves of the rule are pinned here.
+    expect(css).toContain('flex-wrap: nowrap')
+    expect(css).toContain('overflow-x: auto')
   })
 
   it('shows the host entries plus the read-only aggregation when expanded', () => {

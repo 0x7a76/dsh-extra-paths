@@ -224,6 +224,9 @@ export function TextModeEditor({ tr, value, errors, defaultsText, onChange }: {
         style={styles.textarea}
         rows={12}
         spellCheck={false}
+        // The browser's soft wrap would break a long rule at arbitrary points;
+        // the editor keeps every line intact and scrolls horizontally instead.
+        wrap="off"
         value={value}
         aria-label={tr('textMode')}
         onChange={event => { onChange?.(event.target.value) }}

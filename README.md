@@ -225,6 +225,9 @@ name (`.git`, `.env`) is a name rule. Hand-written comments (`# …`) and blank 
   common spellings (access levels, surfaces, bare-name rules, patterns, Windows/WSL paths) and the same defaults note.
 - **The base-workspace field** only feeds the preview and the host-side resolution — it is not part of the saved
   configuration.
+- **Long rules stay on one line**: the editor never soft-wraps (and neither do the paths in the preview) — a long path
+  or pattern keeps its exact spelling and you scroll horizontally with the trackpad/mouse instead of reading a broken
+  wrap.
 - **Save** parses the whole text (all-or-nothing) and writes the structured `paths` array in one step; invalid lines are
   reported with their line number and nothing is saved. The host's refusal (a home/CLI override owns the namespace) is
   shown instead of silently pretending to save.

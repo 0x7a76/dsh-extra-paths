@@ -84,6 +84,12 @@ export const styles = {
     fontSize: 12,
     lineHeight: 1.6,
     resize: 'vertical',
+    // Long paths stay on ONE line: wrapping makes a rule impossible to read.
+    // Horizontal scrolling (trackpad/mouse) is deliberate, not a missing limit.
+    whiteSpace: 'pre',
+    overflowWrap: 'normal',
+    wordBreak: 'normal',
+    overflowX: 'auto',
   },
   textErrors: { display: 'flex', flexDirection: 'column', gap: 2 },
 
@@ -110,7 +116,7 @@ export const styles = {
   panelHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, fontWeight: 600, opacity: 0.8 },
   panelHeadRight: { display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', fontWeight: 400 },
   entry: { display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12 },
-  code: { fontFamily: 'var(--dsh-font-mono, monospace)', fontSize: 12, wordBreak: 'break-all' },
+  code: { fontFamily: 'var(--dsh-font-mono, monospace)', fontSize: 12, whiteSpace: 'nowrap' },
   dim: { opacity: 0.6, fontSize: 12, lineHeight: 1.5 },
   warn: { color: 'var(--dsh-color-warning, #b45309)', fontSize: 12, lineHeight: 1.5 },
   danger: { color: 'var(--dsh-color-danger, #b91c1c)', fontSize: 12, lineHeight: 1.5 },
@@ -192,5 +198,6 @@ export const css = `
   align-items: baseline;
   font-size: 12px;
 }
-.xp-entry-paths { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+/* A resolved path is one token: never wrap it, scroll horizontally instead. */
+.xp-entry-paths { display: flex; gap: 6px; flex-wrap: nowrap; min-width: 0; overflow-x: auto; }
 `

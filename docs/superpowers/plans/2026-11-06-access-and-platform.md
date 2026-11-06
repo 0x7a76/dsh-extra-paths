@@ -598,3 +598,15 @@ fs+shell）」；README（中英）设置页章节同步说明。测试钉住默
   "纯文本规则编辑器（每行一条 + 默认值行 + 内置示例）"。
 - 测试同步删除 `RuleRow` 与 `resolveRuleLexically` 的描述块：**21 文件 / 527 条全绿**（减少的是死代码测试），
   host/client typecheck、`lib/` 重建、sanitized 均通过。
+
+### 17.9 长行不换行（2026-11-06）
+
+用户反馈：文本编辑器里路径/配置很长时不要自动换行，否则断行后难以辨认；宁可自己用触控板/鼠标横向滚动。实现：
+
+- `<textarea wrap="off">` + 行内样式 `white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto`
+  （`styles.textarea`），软换行彻底关闭；
+- 预览里的路径同样按 token 处理：`styles.code` 改为 `white-space: nowrap`，`.xp-entry-paths` 改为
+  `flex-wrap: nowrap; overflow-x: auto`，长路径单行横向滚动；
+- 示例块本来就是 `<pre>`（`white-space: pre` + `overflow: auto`），行为一致；
+- 测试：编辑器断言 `wrap="off"`/`white-space:pre`/`overflow-x:auto`；PreviewPanel 用超长路径断言
+  `white-space:nowrap` + 样式表里的 `flex-wrap: nowrap` / `overflow-x: auto`；README（中英）补一句说明。

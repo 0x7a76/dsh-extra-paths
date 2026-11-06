@@ -91,7 +91,7 @@
   例如 `npm i --prefix /tmp/dsh-peers @deepseek-ai/dsh-client-ui-settings@<宿主线>`），或者
   `pnpm add -D @deepseek-ai/dsh-client-ui-settings@<宿主线>`（会进 lockfile，与 `autoInstallPeers: false` 的取舍见
   `pnpm-workspace.yaml`）。客户端只有一个空的 `import type {}` 依赖该包可解析。
-- **测试默认跑全量**：21 个文件 / 527 条 / 约 1 秒。本仓库的改动几乎都落在跨模块契约上
+- **测试默认跑全量**：21 个文件 / 528 条 / 约 1 秒。本仓库的改动几乎都落在跨模块契约上
   （服务包装器、policy 换算、模式展开、客户端槽位），收敛范围反而更容易漏。
 - 文档分工：`README.md`（英文）+ `README.zh.md`（中文）只面向使用者（是什么、怎么装、怎么配）；
   `docs/superpowers/plans/` 记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或
