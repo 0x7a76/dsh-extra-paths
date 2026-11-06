@@ -610,3 +610,12 @@ fs+shell）」；README（中英）设置页章节同步说明。测试钉住默
 - 示例块本来就是 `<pre>`（`white-space: pre` + `overflow: auto`），行为一致；
 - 测试：编辑器断言 `wrap="off"`/`white-space:pre`/`overflow-x:auto`；PreviewPanel 用超长路径断言
   `white-space:nowrap` + 样式表里的 `flex-wrap: nowrap` / `overflow-x: auto`；README（中英）补一句说明。
+
+### 17.10 0.3.1：把长行不折行修复纳入发布（2026-11-06）
+
+v0.3.0 的 tag/暂存包产生于长行修复之前。用户选择「发布：0.3.1」：
+
+- `package.json` → `0.3.1`；AGENTS 版本表当前行改为 `0.3.1`（并注明长行不折行）；
+- **v0.3.0 从未在 npm 上线**（staged 未批准），由 0.3.1 取代：npm staged 页面里应 Reject 0.3.0；
+  GitHub 上 v0.3.0 的 draft release 删除，tag 保留作为历史提交标记；
+- 0.3.1 包含：0.3.0 全部功能 + `fix(ui): keep long rules on one line`（编辑器/预览路径不折行、横向滚动）。
