@@ -13,10 +13,17 @@
  * Matching only ever yields directories that EXIST, which is what makes "the path
  * contains `.worktrees`" a structural condition rather than a spelling.
  *
+ * A Windows spelling is parsed in its OWN dialect first (`C:\a\**`, `\\server\…`):
+ * separators are normalised for the grammar, and the literal anchor is translated
+ * through `expandConfiguredPath`, so the same configuration also works on the
+ * other platform. A spelling whose anchor cannot be expressed on this host is
+ * `foreign`: inactive with one warning, never a save failure.
+ *
  * Safety envelope, enforced here and validated again at save time:
  * - the literal prefix before the first wildcard is the anchor; it must be
- *   absolute after `~` expansion, must not be a filesystem root, and must not
- *   CONTAIN the home directory — a pattern can never walk `/`, `/Users` or `~`;
+ *   absolute in its own dialect after `~` expansion, must not resolve to a
+ *   volume root (including a translated WSL drive root), and must not CONTAIN
+ *   the home directory — a pattern can never walk `/`, `/Users` or `~`;
  * - the walk never descends into `node_modules` or `.git`;
  * - every cap (depth, directories scanned, matches) makes the WHOLE pattern yield
  *   nothing (fail closed) instead of a partial set: a half-expanded grant would
@@ -25,10 +32,15 @@
  */
 
 import { readdirSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, isAbsolute, join } from 'node:path'
-import { isFilesystemRoot } from './config.js'
-import { canonicalizeRoot, expandPath, isUnder } from './paths.js'
+import { isAbsoluteSpelling, normalizePatternSpelling, type PlatformFacts } from './platform.js'
+import {
+  canonicalizeRoot,
+  discoverPlatformFacts,
+  expandConfiguredPath,
+  isHostVolumeRootPath,
+  isUnder,
+  pathApiOf,
+} from './paths.js'
 
 /** Caps that keep one pattern's expansion bounded. */
 export const PATTERN_LIMITS = {
@@ -48,16 +60,25 @@ export const PATTERN_LIMITS = {
 /** Names the walk never descends into. */
 const PRUNED = new Set(['node_modules', '.git'])
 
+/** The `node:path` implementation for one host (POSIX or win32). */
+type PathApi = ReturnType<typeof pathApiOf>
+
 /** A parsed pattern. */
 export interface RootPattern {
   /** The configured spelling this came from (for messages and the preview). */
   readonly source: string
-  /** The literal directory the walk starts from (absolute). */
+  /** The literal directory the walk starts from (absolute, host-native). */
   readonly anchor: string
   /** Segments after the anchor, each `*`, `**`, or a literal name. */
   readonly segments: readonly string[]
   /** Trailing `..` segments applied to each match. */
   readonly up: number
+  /**
+   * The host facts the anchor was translated with. The walk must use the SAME
+   * dialect as the parser: re-deriving it from `process.platform` would make a
+   * pattern parsed for one host walk with another host's `node:path`.
+   */
+  readonly platform: PlatformFacts
 }
 
 /** One expansion. */
@@ -78,22 +99,44 @@ export interface PatternExpansion {
   readonly scanned: number
 }
 
+/** Why a pattern spelling could not be turned into a walkable pattern. */
+export type PatternParseOutcome =
+  | { readonly ok: true; readonly pattern: RootPattern }
+  /**
+   * Not walkable here. `foreign` is set when the ANCHOR is a spelling of the
+   * other platform: the entry must stay inactive with one informative warning
+   * (a shared configuration has to remain usable on every host), while every
+   * other rejection is a configuration mistake.
+   */
+  | { readonly ok: false; readonly foreign?: string }
+
 /** Whether a spelling is a pattern rather than a literal path. */
 export function isPattern(raw: string): boolean {
-  return raw.includes('*')
+  // The wildcard may sit after Windows separators, so detection runs on the
+  // normalised spelling — a `\` is a legal POSIX filename character and is left
+  // untouched there.
+  return normalizePatternSpelling(raw).includes('*')
 }
 
 /**
- * Parse a pattern spelling.
- * @param raw - the configured spelling.
+ * Parse a pattern spelling and keep the reason when it cannot be walked.
+ * @param raw - the configured spelling (POSIX or Windows).
  * @param workspaceRoot - the base a relative anchor resolves against.
- * @param home - the home directory to expand `~` with.
- * @returns the parsed pattern, or undefined when it cannot be walked safely.
+ * @param facts - host facts (defaults to the discovered ones); the anchor is
+ *   translated into the host's dialect with these.
+ * @returns the pattern, or a rejection that says whether it is merely foreign.
  */
-export function parsePattern(raw: string, workspaceRoot: string, home: string = homedir()): RootPattern | undefined {
-  const segments = raw.split('/').filter(segment => segment !== '')
+export function parsePatternOutcome(
+  raw: string,
+  workspaceRoot: string,
+  facts: PlatformFacts = discoverPlatformFacts(),
+): PatternParseOutcome {
+  // The grammar is separator-agnostic: a Windows spelling keeps its dialect for
+  // translation, but '*' detection and segment splitting see `/`.
+  const spelling = normalizePatternSpelling(raw)
+  const segments = spelling.split('/').filter(segment => segment !== '')
   const firstWildcard = segments.findIndex(segment => segment.includes('*'))
-  if (firstWildcard < 0) return undefined
+  if (firstWildcard < 0) return { ok: false }
 
   // Trailing `..` run: applied AFTER matching, so it must not be part of the walk.
   let end = segments.length
@@ -103,56 +146,105 @@ export function parsePattern(raw: string, workspaceRoot: string, home: string = 
     end -= 1
   }
   const walk = segments.slice(firstWildcard, end)
-  if (walk.length === 0) return undefined
+  if (walk.length === 0) return { ok: false }
 
-  // The anchor spelling keeps its leading `/` or `~`. Rebuilding it from the
-  // filtered segments would turn `/a/b/**` into the RELATIVE `a/b` and resolve
-  // the walk against the session workspace instead of `/a/b` — the defect this
-  // guard was extracted from.
-  const anchorSpelling = raw.slice(0, raw.indexOf('*')).replace(/\/+$/, '')
-  if (!anchorSpelling.startsWith('/') && !anchorSpelling.startsWith('~')) return undefined
-  // `/**`, `~/**` and `/srv/**` would walk the filesystem, a whole home
-  // directory, or a top-level directory: a pattern needs two literal segments.
-  if (firstWildcard < 2) return undefined
-
-  const anchor = canonicalizeRoot(expandPath(anchorSpelling, workspaceRoot, home))
-  if (!isAbsolute(anchor) || isFilesystemRoot(anchor)) return undefined
-  const homeRoot = canonicalizeRoot(home)
+  // The anchor spelling keeps its own leading `/`, `~` or drive prefix. Rebuilding
+  // it from the filtered segments would turn `/a/b/**` into the RELATIVE `a/b` and
+  // resolve the walk against the session workspace instead of `/a/b` — the defect
+  // this guard was extracted from.
+  const anchorPrefix = spelling.slice(0, spelling.indexOf('*'))
+  // Absoluteness is judged on the RAW prefix: `/\*\*` strips to an empty
+  // anchor and must stay an absolute (and rejected) root, not become a
+  // workspace-relative sweep.
+  const absoluteAnchor = isAbsoluteSpelling(anchorPrefix)
+  const anchorSpelling = anchorPrefix.replace(/\/+$/, '')
+  // A workspace-ROOT anchor (leading wildcard, no literal prefix) must not be a
+  // pure sweep: `**` / `**/*` alone would walk everything under the workspace.
+  // Patterns with a literal anchor keep the documented trailing-`**` meaning.
+  if (!absoluteAnchor && anchorSpelling === ''
+    && !walk.some(segment => !segment.includes('*') && segment !== '..')) {
+    return { ok: false }
+  }
+  let anchor: string
+  if (absoluteAnchor) {
+    // `/**`, `~/**` and `/srv/**` would walk the filesystem, a whole home
+    // directory, or a top-level directory: an ABSOLUTE anchor needs two literal
+    // segments.
+    if (firstWildcard < 2) return { ok: false }
+    const expanded = expandConfiguredPath(anchorSpelling, workspaceRoot, facts)
+    if (!expanded.ok) return { ok: false, foreign: expanded.foreign }
+    anchor = canonicalizeRoot(expanded.path, facts)
+  } else {
+    // Workspace-relative anchor: an empty prefix (leading wildcard, `**/.git`)
+    // walks the workspace itself; a literal prefix walks its subdirectory. The
+    // safety checks below apply exactly as for an absolute anchor.
+    const expanded = expandConfiguredPath(anchorSpelling === '' ? '.' : anchorSpelling, workspaceRoot, facts)
+    if (!expanded.ok) return { ok: false, foreign: expanded.foreign }
+    anchor = canonicalizeRoot(expanded.path, facts)
+  }
+  // The anchor is host-native now: the literal-root rejection must run AFTER
+  // translation, so `C:\` inside WSL (⇒ `/mnt/c`) is refused as the drive root it
+  // is instead of being walked as an ordinary directory.
+  if (isHostVolumeRootPath(anchor, facts)) return { ok: false }
+  const homeRoot = canonicalizeRoot(facts.home, facts)
   // An anchor that IS or CONTAINS the home directory would walk far too much.
-  if (anchor === homeRoot || isUnder(homeRoot, anchor)) return undefined
+  if (anchor === homeRoot || isUnder(homeRoot, anchor, facts)) return { ok: false }
 
-  return { source: raw, anchor, segments: walk, up }
+  return { ok: true, pattern: { source: raw, anchor, segments: walk, up, platform: facts } }
 }
 
 /**
- * What one directory contributes: its child directories, or nothing when
- * unreadable.
- * @param directory - the directory to list.
- * @param visibleOnly - skip HIDDEN child directories. `**` uses this: a search
- * for a repository's `.worktrees` has no business inside `.cache`, `.gradle` or
- * a checked-out tool tree, and skipping them is what keeps the walk bounded.
- * The pattern's own literal segments are matched at their level regardless, so
- * `.worktrees` itself is still found.
+ * Parse a pattern spelling.
+ * @param raw - the configured spelling.
+ * @param workspaceRoot - the base a relative anchor resolves against.
+ * @param facts - host facts (defaults to the discovered ones).
+ * @returns the parsed pattern, or undefined when it cannot be walked safely.
  */
-function childDirectories(directory: string, visibleOnly = false): string[] {
+export function parsePattern(
+  raw: string,
+  workspaceRoot: string,
+  facts: PlatformFacts = discoverPlatformFacts(),
+): RootPattern | undefined {
+  const outcome = parsePatternOutcome(raw, workspaceRoot, facts)
+  return outcome.ok ? outcome.pattern : undefined
+}
+
+/**
+ * One direct child entry: name, host-native path and whether it is a directory.
+ */
+interface ChildEntry {
+  readonly name: string
+  readonly path: string
+  readonly isDirectory: boolean
+}
+
+/**
+ * List one directory's direct children, including hidden entries and the pruned
+ * names (`node_modules`, `.git`). Pruning is applied by the CALLER: the names
+ * themselves must stay matchable — a pattern has to be able to FIND a `.git`
+ * directory, it just must never descend inside one. A final LITERAL segment may
+ * match a file, so non-directory entries are reported too.
+ * @param directory - the directory to list.
+ * @param api - the host's `node:path` arithmetic.
+ * @returns the child entries, sorted by name; empty when unreadable.
+ */
+function listChildren(directory: string, api: PathApi): ChildEntry[] {
   let names: string[]
   try {
     names = readdirSync(directory)
   } catch {
     return []
   }
-  const children: string[] = []
-  for (const name of names) {
-    if (PRUNED.has(name)) continue
-    if (visibleOnly && name.startsWith('.')) continue
-    const child = join(directory, name)
+  const children: ChildEntry[] = []
+  for (const name of names.sort()) {
+    const child = api.join(directory, name)
     try {
-      if (statSync(child).isDirectory()) children.push(child)
+      children.push({ name, path: child, isDirectory: statSync(child).isDirectory() })
     } catch {
       // A vanishing entry is not an error: the next pass simply will not see it.
     }
   }
-  return children.sort()
+  return children
 }
 
 /**
@@ -165,6 +257,7 @@ export function expandPattern(
   pattern: RootPattern,
   limits: { maxDirs: number; maxMatches: number; maxDepth: number } = PATTERN_LIMITS,
 ): PatternExpansion {
+  const api = pathApiOf(pattern.platform)
   const matches = new Set<string>()
   let scanned = 0
   let capped = false
@@ -206,19 +299,33 @@ export function expandPattern(
         truncated = true
         return
       }
-      // …or one more level, keeping `**` active. Hidden directories are skipped
-      // here only: this is the branch that would otherwise wander into every
-      // source tree below the anchor.
-      for (const child of childDirectories(directory, true)) {
-        walk(child, index, depth + 1)
+      // …or one more level, keeping `**` active. Hidden directories and the
+      // pruned names are skipped here only: this is the branch that would
+      // otherwise wander into every source tree below the anchor.
+      for (const child of listChildren(directory, api)) {
+        if (!child.isDirectory || child.name.startsWith('.') || PRUNED.has(child.name)) continue
+        walk(child.path, index, depth + 1)
         if (capped) return
       }
       return
     }
 
-    for (const child of childDirectories(directory)) {
-      const name = child.slice(child.lastIndexOf('/') + 1)
-      if (segment === '*' || segment === name) walk(child, index + 1, depth)
+    const isLast = index === pattern.segments.length - 1
+    for (const child of listChildren(directory, api)) {
+      const matchesSegment = segment === '*' ? child.isDirectory : segment === child.name
+      if (!matchesSegment) continue
+      if (isLast) {
+        // A final LITERAL segment may be a file (`**/.env`); a final `*` keeps
+        // the historical directories-only meaning.
+        if (matches.size >= limits.maxMatches) {
+          stop('matches')
+          return
+        }
+        matches.add(child.path)
+        continue
+      }
+      if (!child.isDirectory || PRUNED.has(child.name)) continue
+      walk(child.path, index + 1, depth)
       if (capped) return
     }
   }
@@ -230,9 +337,11 @@ export function expandPattern(
   const resolved = [...matches]
     .map(match => {
       let result = match
-      for (let step = 0; step < up; step += 1) result = dirname(result)
-      return canonicalizeRoot(result)
+      for (let step = 0; step < up; step += 1) result = api.dirname(result)
+      return canonicalizeRoot(result, pattern.platform)
     })
-    .filter(candidate => !isFilesystemRoot(candidate))
+    // A trailing `..` run can climb to a volume root; that is as unacceptable as
+    // configuring one directly (translated WSL drive roots included).
+    .filter(candidate => !isHostVolumeRootPath(candidate, pattern.platform))
   return { matches: [...new Set(resolved)].sort(), capped: false, ...(truncated ? { truncated: true } : {}), scanned }
 }

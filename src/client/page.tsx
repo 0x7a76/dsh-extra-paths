@@ -1,12 +1,18 @@
 /**
- * The Extra paths settings page: one card per configured path, localized copy,
- * a LIVE lexical resolution per row against a base workspace, quick add
- * buttons, and the host's authoritative preview of the DRAFT (unsaved rows).
+ * The Extra paths settings page: ONE plain-text editor for every rule
+ * (`path | access | surfaces` per line, with an always-visible defaults line and
+ * a collapsible examples block), the base-workspace picker used only for the
+ * preview, and the host's authoritative preview of the DRAFT.
+ *
+ * Why the page looks like this: rows and mode switches were removed after the
+ * third round of UI feedback — the text form is the single source of truth, and
+ * Save is the only action. Saving always writes the structured
+ * `{path, access, surfaces}` array; the editor is only a view of it.
  *
  * Copy follows the host's own language selection: every string comes from the
- * dictionaries registered by `../client/index` through the framework-injected
- * `t` seat, and the Chinese dictionary is the built-in fallback for a host that
- * supplies no seat at all (0.1.5 slots, unit tests).
+ * dictionaries registered by `./index` through the framework-injected `t` seat,
+ * and the Chinese dictionary is the built-in fallback for a host that supplies
+ * no seat at all (0.1.5 slots, unit tests).
  *
  * The base workspace comes from the shell's standard `useWorkspaces` hook when
  * the slot supplies it — a snapshot read once during activation would be
@@ -17,26 +23,31 @@
  */
 
 import * as React from 'react'
-import { fallbackTranslate, zh, type Translate } from './locales'
-import { resolveLexically } from './paths'
-import { fetchPreview, type PreviewEntry, type PreviewResult } from './preview'
+import type { Access } from '../config'
+import { fallbackTranslate, zh, type ExtraPathsLocaleKey, type Translate } from './locales'
+import {
+  defaultsOf,
+  hostViewOf,
+  isNameRulePath,
+  parseRules,
+  payloadOf,
+  previewBaseOf,
+  resolveBase,
+  rowsOf,
+  serializeRules,
+  type BaseResult,
+  type Rule,
+  type Section,
+  type TextError,
+  type TextErrorCode,
+} from './paths'
+import {
+  fetchPreview,
+  type PreviewCapabilities,
+  type PreviewEntry,
+  type PreviewResult,
+} from './preview'
 import { css, styles } from './styles'
-
-type Scope = 'write' | 'always-write'
-type Surface = 'fs' | 'shell'
-type Status = PreviewEntry['status']
-
-/** One editable row. */
-interface Row {
-  path: string
-  scope: Scope
-  surfaces: Surface[]
-}
-
-/** The settings section this page edits. */
-interface Section {
-  paths?: readonly (string | { path?: string; scope?: Scope; surfaces?: readonly Surface[] })[]
-}
 
 /** The bound settings scope surface (shape from @deepseek-ai/dsh-client-ui-settings). */
 export interface PageScope {
@@ -89,30 +100,254 @@ export type WorkspacesHook = (selector: (snapshot: unknown) => unknown) => unkno
 const NOOP_HOOK: WorkspacesHook = () => undefined
 const IDENTITY = (snapshot: unknown): unknown => snapshot
 
+const ACCESS_LABEL: Record<Access, ExtraPathsLocaleKey> = {
+  deny: 'accessDeny',
+  read: 'accessRead',
+  write: 'accessWrite',
+  'always-write': 'accessAlways',
+}
+
+const STATUS_LABEL: Record<PreviewEntry['status'], ExtraPathsLocaleKey> = {
+  ok: 'statusOk',
+  missing: 'statusMissing',
+  rejected: 'statusRejected',
+  foreign: 'statusForeign',
+}
+
+const STATUS_STYLE: Record<PreviewEntry['status'], React.CSSProperties> = {
+  ok: styles.statusOk,
+  missing: styles.statusMissing,
+  rejected: styles.statusRejected,
+  foreign: styles.statusForeign,
+}
+
+const TEXT_ERROR_LABEL: Record<TextErrorCode, ExtraPathsLocaleKey> = {
+  'empty-path': 'textErrorEmptyPath',
+  'unknown-access': 'textErrorUnknownAccess',
+  'unknown-surfaces': 'textErrorUnknownSurfaces',
+  'too-many-fields': 'textErrorTooManyFields',
+}
+
 function itemsOf(value: unknown): readonly { path?: string }[] {
   const items = (value as { items?: unknown } | undefined)?.items
   return Array.isArray(items) ? (items as readonly { path?: string }[]) : []
 }
 
-const STATUS_STYLE: Record<Status, React.CSSProperties> = {
-  ok: styles.statusOk,
-  missing: styles.statusMissing,
-  rejected: styles.statusRejected,
+/**
+ * Localized one-line message for a rejected text-mode line.
+ * @param tr - the host's translate seat (or the Chinese fallback).
+ * @param error - one parser error with its 1-based line number.
+ * @returns `第 n 行：…` / `Line n: …`.
+ */
+export function textErrorMessage(tr: Translate, error: TextError): string {
+  const params = error.value === undefined ? undefined : { value: error.value }
+  return `${tr('textErrorAtLine', { line: error.line })}${tr(TEXT_ERROR_LABEL[error.code], params)}`
 }
 
-function rowsOf(section: Section | undefined): Row[] {
-  const rows: Row[] = []
-  for (const item of section?.paths ?? []) {
-    if (typeof item === 'string') rows.push({ path: item, scope: 'write', surfaces: ['fs', 'shell'] })
-    else rows.push({ path: item.path ?? '', scope: item.scope ?? 'write', surfaces: [...(item.surfaces ?? ['fs', 'shell'])] })
+/**
+ * The tooltip of a NAME RULE row: what the spelling means, plus — once the
+ * host's preview has walked the scope roots — how many paths currently match
+ * (zero is a valid answer: the rule still applies to paths created later).
+ * @param tr - the host's translate seat (or the Chinese fallback).
+ * @param hostEntry - the host's preview entry for this row, when it has arrived.
+ * @returns the localized one-line explanation.
+ */
+function nameRuleText(tr: Translate, hostEntry?: PreviewEntry): string {
+  const hint = tr('nameRuleHint')
+  const matches = hostEntry?.matches
+  if (matches === undefined) return hint
+  return `${hint} · ${matches > 0 ? tr('nameRuleMatches', { count: matches }) : tr('nameRuleNoMatches')}`
+}
+
+/**
+ * Whether the shell surface cannot enforce a configured restriction on this host.
+ * Before the host reports capabilities (undefined) nothing is claimed.
+ * @param capabilities - the host's shell capability matrix.
+ * @param rows - the current rules.
+ * @returns true when a deny/read rule targets a shell that cannot honor it.
+ */
+export function needsShellLimitWarning(
+  capabilities: PreviewCapabilities | undefined,
+  rows: readonly Rule[],
+): boolean {
+  if (capabilities === undefined) return false
+  const restricted = rows.some(row => (row.access === 'deny' || row.access === 'read') && row.surfaces.includes('shell'))
+  if (!restricted) return false
+  return !capabilities.shellReadDeny || !capabilities.shellWriteDeny
+}
+
+/**
+ * The honesty banner: a deny/read rule that targets `shell` on a dialect that
+ * cannot subtract permissions (landlock, Windows ACL) is still enforced for the
+ * fs tools — but bash will not honor it. The page must say that out loud.
+ * @param props - capability matrix, current rules and the translate seat.
+ */
+export function CapabilityBanner({ capabilities, rows, t }: {
+  capabilities?: PreviewCapabilities
+  rows: readonly Rule[]
+  t?: Translate
+}): React.ReactElement | null {
+  const tr = t ?? fallbackTranslate
+  if (!needsShellLimitWarning(capabilities, rows)) return null
+  return (
+    <div style={styles.capability} role="status">
+      {tr('capabilityShellLimit', { dialect: capabilities?.shellDialect ?? 'unknown' })}
+    </div>
+  )
+}
+
+/**
+ * The rule editor: the syntax hint, the live defaults line, the collapsible
+ * examples, a monospace textarea and per-line errors. It owns NO action — Save
+ * lives in the page toolbar and parses the whole draft (all-or-nothing), so the
+ * editor can never disagree with the stored configuration.
+ * @param props - editor content, parser errors, defaults copy and the change hook.
+ */
+export function TextModeEditor({ tr, value, errors, defaultsText, onChange }: {
+  tr: Translate
+  value: string
+  errors?: readonly TextError[]
+  /** The live "omitted fields use …" line, so custom defaults are not lied about. */
+  defaultsText?: string
+  onChange?: (value: string) => void
+}): React.ReactElement {
+  return (
+    <div style={styles.textEditor}>
+      <div style={styles.dim}>{tr('textModeHint')}</div>
+      {defaultsText === undefined ? null : <div style={styles.dim}>{defaultsText}</div>}
+      <details style={styles.examples}>
+        <summary style={styles.examplesSummary}>{tr('examplesTitle')}</summary>
+        <pre style={styles.examplesBody}>{tr('examplesBody')}</pre>
+      </details>
+      <textarea
+        className="xp-textarea"
+        style={styles.textarea}
+        rows={12}
+        spellCheck={false}
+        value={value}
+        aria-label={tr('textMode')}
+        onChange={event => { onChange?.(event.target.value) }}
+      />
+      {errors !== undefined && errors.length > 0
+        ? (
+          <div style={styles.textErrors}>
+            <div style={styles.warn}>{tr('textModeInvalid')}</div>
+            {errors.map(error => (
+              <div style={styles.warn} key={`${error.line}-${error.code}`}>{textErrorMessage(tr, error)}</div>
+            ))}
+          </div>
+        )
+        : null}
+    </div>
+  )
+}
+
+/** Why the base field cannot be used yet, localized (undefined when it is fine). */
+function baseProblemText(tr: Translate, base: BaseResult): string | undefined {
+  if (base.ok) return undefined
+  switch (base.problem) {
+    case 'empty':
+      return undefined
+    case 'relative':
+      return tr('resolveBaseInvalid')
+    case 'waiting':
+      return tr('baseWaiting')
+    case 'foreign':
+      return tr('baseForeign')
   }
-  return rows
 }
 
-function payloadOf(rows: readonly Row[]): unknown[] {
-  return rows
-    .filter(row => row.path.trim() !== '')
-    .map(row => ({ path: row.path.trim(), scope: row.scope, surfaces: [...row.surfaces] }))
+/**
+ * The host's resolution report, collapsed by default: the text editor is the
+ * main view, and the preview is the authoritative detail when the user wants it.
+ * @param props - expansion state, the base outcome, the preview payload and dirty flag.
+ */
+export function PreviewPanel({ tr, expanded, onToggle, typedBase, base, preview, dirty }: {
+  tr: Translate
+  expanded: boolean
+  onToggle?: () => void
+  typedBase: string
+  base: BaseResult
+  preview?: PreviewResult
+  dirty: boolean
+}): React.ReactElement {
+  const writable = preview?.writable ?? preview?.effective ?? []
+  const readOnly = preview?.readOnly ?? []
+  const denied = preview?.denied ?? []
+  let body: React.ReactNode
+  if (typedBase === '') {
+    body = <div style={styles.dim}>{tr('previewNoBase')}</div>
+  } else if (!base.ok) {
+    body = (
+      <div style={styles.dim}>
+        {base.problem === 'relative'
+          ? tr('previewBadBase')
+          : base.problem === 'waiting'
+            ? tr('previewExpandingHome')
+            : tr('baseForeign')}
+      </div>
+    )
+  } else if (preview === undefined) {
+    body = <div style={styles.dim}>{tr('previewUnavailable')}</div>
+  } else if (preview.entries.length === 0 && readOnly.length === 0 && denied.length === 0) {
+    body = <div style={styles.dim}>{tr('previewEmpty')}</div>
+  } else {
+    body = (
+      <>
+        {preview.entries.map((entry, index) => (
+          <div className="xp-entry" key={`${index}-${entry.raw}`}>
+            <span style={STATUS_STYLE[entry.status]}>[{tr(STATUS_LABEL[entry.status])}]</span>
+            <span style={styles.dim}>{entry.access === undefined ? '' : tr(ACCESS_LABEL[entry.access])}</span>
+            <span className="xp-entry-paths">
+              <code style={styles.code}>{entry.raw}</code>
+              <span style={styles.dim}>→</span>
+              <code style={styles.code}>
+                {entry.resolved !== ''
+                  ? entry.resolved
+                  : isNameRulePath(entry.raw) ? nameRuleText(tr, entry) : tr('unresolved')}
+              </code>
+            </span>
+          </div>
+        ))}
+        {readOnly.length > 0
+          ? (
+            <div style={styles.entry}>
+              <span style={styles.dim}>{tr('previewReadOnly', { count: readOnly.length })}</span>
+              {readOnly.map(path => <code key={path} style={styles.code}>{path}</code>)}
+            </div>
+          )
+          : null}
+        {denied.length > 0
+          ? (
+            <div style={styles.entry}>
+              <span style={styles.dim}>{tr('previewDenied', { count: denied.length })}</span>
+              {denied.map(path => <code key={path} style={styles.code}>{path}</code>)}
+            </div>
+          )
+          : null}
+        {preview.warnings.map(warning => <div style={styles.warn} key={warning}>{warning}</div>)}
+      </>
+    )
+  }
+  return (
+    <div style={styles.panel}>
+      <div style={styles.panelHead}>
+        <span>
+          {tr('previewTitle')}
+          {dirty ? tr('previewDirty') : ''}
+        </span>
+        <span style={styles.panelHeadRight}>
+          {preview === undefined
+            ? null
+            : <span style={styles.dim}>{tr('previewEffective', { count: writable.length })}</span>}
+          <button type="button" className="xp-link" onClick={onToggle}>
+            {expanded ? tr('collapse') : tr('expand')}
+          </button>
+        </span>
+      </div>
+      {expanded ? body : null}
+    </div>
+  )
 }
 
 function useSnapshot(scope: PageScope): { status: string; value: Section | undefined } {
@@ -171,19 +406,35 @@ export function ExtraPathsPage({ scope, t, getWorkspaces, useWorkspaces }: {
     .map(item => item.path)
     .filter((path): path is string => typeof path === 'string' && path !== '')
 
-  const [rows, setRows] = React.useState<Row[]>(() => rowsOf(snapshot.value))
+  const defaults = defaultsOf(snapshot.value)
+  const [rows, setRows] = React.useState<Rule[]>(() => rowsOf(snapshot.value))
+  const [text, setText] = React.useState<string>(() => serializeRules(rowsOf(snapshot.value)))
   const [dirty, setDirty] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | undefined>(undefined)
+  const [textErrors, setTextErrors] = React.useState<readonly TextError[] | undefined>(undefined)
   const [preview, setPreview] = React.useState<PreviewResult | undefined>(undefined)
   const [cwd, setCwd] = React.useState<string>(() => candidates[0] ?? '')
   const [cwdPinned, setCwdPinned] = React.useState(false)
   const [manualBase, setManualBase] = React.useState(false)
+  const [introExpanded, setIntroExpanded] = React.useState(false)
+  const [previewExpanded, setPreviewExpanded] = React.useState(false)
 
-  // Adopt host changes only while the user has no staged edits.
+  // Adopt host changes only while the user has no unsaved edits. When the text
+  // still describes exactly what is stored, keep it verbatim (hand-written
+  // comments survive); otherwise re-render the canonical lines.
   React.useEffect(() => {
-    if (!dirty) setRows(rowsOf(snapshot.value))
-  }, [snapshot, dirty])
+    if (dirty) return
+    const nextRows = rowsOf(snapshot.value)
+    const parsed = parseRules(text, defaultsOf(snapshot.value))
+    const sameAsStored = parsed.ok
+      && JSON.stringify(payloadOf(parsed.rules)) === JSON.stringify(payloadOf(nextRows))
+    setRows(nextRows)
+    if (!sameAsStored) {
+      setText(serializeRules(nextRows))
+      setTextErrors(undefined)
+    }
+  }, [snapshot, dirty, text])
 
   // The list can arrive AFTER the first render, so the base is adopted when it
   // shows up — unless the user already typed or picked one.
@@ -192,90 +443,110 @@ export function ExtraPathsPage({ scope, t, getWorkspaces, useWorkspaces }: {
     if (!cwdPinned && cwd === '' && first !== undefined) setCwd(first)
   }, [cwdPinned, cwd, first])
 
-  // The base may be spelled with `~` — the host expands it the same way it
-  // expands a row. Until the first answer reports the home directory a `~` base
-  // resolves to nothing rather than to a wrong path.
-  const typedBase = cwd.trim()
-  const usableBase = typedBase.startsWith('/') || typedBase === '~' || typedBase.startsWith('~/')
-  const base = typedBase.startsWith('~') ? (resolveLexically(typedBase, '', preview?.home) ?? '') : typedBase
+  // The host's platform facts arrive with the first preview; until then the
+  // preview base cannot be resolved.
+  const host = hostViewOf(preview)
+  const base = resolveBase(cwd, host)
+  // `~` may travel raw: the host expands it with the REAL home directory, which
+  // is also how the page learns the platform facts from a `~` base.
+  const previewBase = previewBaseOf(cwd, base)
 
-  // The host preview answers for the DRAFT (debounced so typing stays cheap):
-  // previously it described only the stored document, which made configuring a
-  // relative path a guess-until-you-save exercise.
+  // The host preview answers for the DRAFT (debounced so typing stays cheap).
+  // `rows` is the last text state that PARSED, so a half-typed line does not
+  // turn the preview into an error flash.
   const request = JSON.stringify(payloadOf(rows))
   React.useEffect(() => {
-    if (base === '') return
+    if (previewBase === '') {
+      setPreview(undefined)
+      return
+    }
     let live = true
     const timer = setTimeout(() => {
       const draft = JSON.parse(request) as unknown[]
-      void fetchPreview(base, draft).then(result => { if (live) setPreview(result) })
+      void fetchPreview(previewBase, draft).then(result => { if (live) setPreview(result) })
     }, 250)
     return () => { live = false; clearTimeout(timer) }
-  }, [base, request, snapshot])
+  }, [previewBase, request, snapshot])
 
-  const update = (index: number, patch: Partial<Row>): void => {
+  /**
+   * Edit the one text form. A parse failure is reported per line and the last
+   * VALID rows stay in place for the preview; Save refuses until it parses.
+   */
+  const change = (value: string): void => {
     setDirty(true)
-    setRows(current => current.map((row, i) => (i === index ? { ...row, ...patch } : row)))
-  }
-  const toggleSurface = (index: number, surface: Surface): void => {
-    const row = rows[index]
-    if (row === undefined) return
-    const surfaces = row.surfaces.includes(surface)
-      ? row.surfaces.filter(item => item !== surface)
-      : [...row.surfaces, surface]
-    update(index, { surfaces })
-  }
-  const append = (path: string): void => {
-    setDirty(true)
-    setRows(current => [...current, { path, scope: 'write', surfaces: ['fs', 'shell'] }])
-  }
-  const reset = (): void => {
-    setRows(rowsOf(snapshot.value))
-    setDirty(false)
+    setText(value)
     setError(undefined)
+    const parsed = parseRules(value, defaults)
+    if (parsed.ok) {
+      setRows(parsed.rules)
+      setTextErrors(undefined)
+    } else {
+      setTextErrors(parsed.errors)
+    }
   }
+
+  /**
+   * The page's only action: parse the whole text (all-or-nothing) and write the
+   * structured `paths` array. A host refusal keeps the text intact.
+   */
   const save = (): void => {
+    const parsed = parseRules(text, defaults)
+    if (!parsed.ok) {
+      setTextErrors(parsed.errors)
+      return
+    }
     setBusy(true)
     setError(undefined)
-    void scope.set('paths', payloadOf(rows))
+    void scope.set('paths', payloadOf(parsed.rules))
       .then((accepted) => {
         // `false` is the host's refusal (a legacy 0.1.5 scope resolves void).
-        // Treating it as saved is what made a deleted row snap back silently.
         if (accepted === false) setError(tr('saveRefused'))
-        else setDirty(false)
+        else {
+          setRows(parsed.rules)
+          setDirty(false)
+          setTextErrors(undefined)
+        }
       })
       .catch((cause: unknown) => {
         setError(isSaveRefused(cause) ? tr('saveRefused') : cause instanceof Error ? cause.message : String(cause))
       })
       .finally(() => { setBusy(false) })
   }
-  const hostEntriesOf = (path: string): readonly PreviewEntry[] =>
-    preview?.entries.filter(entry => entry.raw === path.trim()) ?? []
-  const hostEntryOf = (path: string): PreviewEntry | undefined => hostEntriesOf(path)[0]
 
   const picker = !manualBase && candidates.length > 0
-  const known = candidates.includes(typedBase)
+  const known = candidates.includes(cwd.trim())
+  const baseNotice = baseProblemText(tr, base)
 
   return (
     <div style={styles.page}>
       <style>{css}</style>
 
-      <div style={styles.intro}>
-        {tr('introBefore')}<strong>{tr('introNoApproval')}</strong>{tr('introAfter')}
-        {tr('introRuleBefore')}<strong>{tr('introRuleEmphasis')}</strong>{tr('introRuleAfter')}
+      <div style={styles.introLine}>
+        <span style={styles.intro}>{tr('introCollapsed')}</span>
+        <button type="button" className="xp-link" onClick={() => { setIntroExpanded(!introExpanded) }}>
+          {introExpanded ? tr('collapse') : tr('expand')}
+        </button>
       </div>
+      {introExpanded
+        ? (
+          <div style={styles.intro}>
+            {tr('introBefore')}<strong>{tr('introNoApproval')}</strong>{tr('introAfter')}
+            {tr('introRuleBefore')}<strong>{tr('introRuleEmphasis')}</strong>{tr('introRuleAfter')}
+          </div>
+        )
+        : null}
 
       <div style={styles.baseRow}>
-        <span style={styles.cardTitle}>{tr('baseWorkspace')}</span>
+        <span style={styles.label}>{tr('baseWorkspace')}</span>
         {picker
           ? (
             <select
               className="xp-select"
               style={styles.baseField}
-              value={known ? typedBase : ''}
+              value={known ? cwd.trim() : ''}
               onChange={event => { setCwdPinned(true); setCwd(event.target.value) }}
             >
-              {known ? null : <option value={typedBase}>{typedBase === '' ? tr('notSelected') : typedBase}</option>}
+              {known ? null : <option value={cwd.trim()}>{cwd.trim() === '' ? tr('notSelected') : cwd.trim()}</option>}
               {candidates.map(path => <option key={path} value={path}>{path}</option>)}
             </select>
           )
@@ -290,166 +561,48 @@ export function ExtraPathsPage({ scope, t, getWorkspaces, useWorkspaces }: {
           )}
         {candidates.length > 0
           ? (
-            <button type="button" className="xp-link" onClick={() => { setManualBase(!manualBase) }}>
+            <button
+              type="button"
+              className="xp-link"
+              onClick={() => { setCwdPinned(true); setManualBase(!manualBase) }}
+            >
               {picker ? tr('manualBase') : tr('pickBase')}
             </button>
           )
           : null}
         <span style={styles.dim}>{tr('baseHint')}</span>
       </div>
+      {baseNotice === undefined ? null : <div style={styles.dim}>{baseNotice}</div>}
 
-      <div style={styles.toolbar}>
+      {/* ONE action: Save. The textarea below is the whole editor. */}
+      <div className="xp-toolbar" style={styles.toolbar}>
         <button type="button" className="xp-button xp-button-on" disabled={busy || !dirty} onClick={save}>
           {busy ? tr('saving') : tr('save')}
         </button>
-        <button type="button" className="xp-button" onClick={() => { append('') }}>{tr('addPath')}</button>
-        <button type="button" className="xp-button" onClick={() => { append('..') }}>{tr('addParent')}</button>
-        <button type="button" className="xp-button" disabled={!dirty} onClick={reset}>{tr('discard')}</button>
         <span style={styles.dim}>{dirty ? tr('dirty') : tr('synced')}</span>
       </div>
 
-      {rows.length === 0
-        ? <div style={styles.dim}>{tr('emptyPaths')}</div>
-        : null}
+      <CapabilityBanner capabilities={preview?.capabilities} rows={rows} t={tr} />
 
-      {rows.map((row, index) => {
-        // A pattern row has no single lexical resolution — the HOST expands it by
-        // walking the filesystem, so the row reports the match count instead of
-        // pretending `**` is a directory name.
-        const patternRow = row.path.includes('*')
-        const resolved = patternRow ? undefined : resolveLexically(row.path, base, preview?.home)
-        const hostMatches = hostEntriesOf(row.path)
-        const hostEntry = hostEntryOf(row.path)
-        return (
-          // The key must NOT contain anything the user is editing: keying by the
-          // path itself remounted the card on every keystroke and the input lost
-          // focus after the first character. Position is a stable identity here.
-          <div style={styles.card} key={index}>
-            <div style={styles.cardHead}>
-              <span style={styles.cardTitle}>{tr('rowTitle', { index: index + 1 })}</span>
-              <span style={styles.cardHeadRight}>
-                {hostEntry !== undefined
-                  ? (
-                    <span style={STATUS_STYLE[hostEntry.status]}>
-                      [{tr(hostEntry.status === 'ok' ? 'statusOk' : hostEntry.status === 'missing' ? 'statusMissing' : 'statusRejected')}
-                      {hostMatches.length > 1 ? ` ×${hostMatches.length}` : ''}]
-                    </span>
-                  )
-                  : null}
-                <button
-                  type="button"
-                  className="xp-link"
-                  onClick={() => { setDirty(true); setRows(current => current.filter((_, i) => i !== index)) }}
-                >
-                  {tr('delete')}
-                </button>
-              </span>
-            </div>
-            <input
-              className="xp-input"
-              style={styles.pathInput}
-              value={row.path}
-              placeholder={tr('pathPlaceholder')}
-              onChange={event => { update(index, { path: event.target.value }) }}
-            />
-            <div style={styles.resolvedRow}>
-              {patternRow
-                ? (
-                  <span style={styles.dim}>
-                    {tr('patternResolved')}
-                    {' '}
-                    {hostMatches.length > 0
-                      ? tr('patternMatches', { count: hostMatches.length })
-                      : tr('patternNoMatches')}
-                  </span>
-                )
-                : resolved === undefined
-                ? <span style={styles.dim}>
-                  {row.path.trim() === ''
-                    ? tr('resolvePendingEmpty')
-                    : typedBase === ''
-                      ? tr('resolveNeedsBase')
-                      : !usableBase
-                        ? tr('resolveBaseInvalid')
-                        : tr('resolveNeedsHome')}
-                </span>
-                : (
-                  <>
-                    <span style={styles.dim}>{tr('resolvedAs')}</span>
-                    <code style={styles.code}>{resolved}</code>
-                    {hostEntry !== undefined && hostEntry.resolved !== resolved
-                      ? <span style={styles.dim}>{tr('hostResolved', { path: hostEntry.resolved })}</span>
-                      : null}
-                  </>
-                )}
-            </div>
-            <div style={styles.controlsRow}>
-              <label style={styles.field}>
-                {tr('mode')}
-                <select
-                  className="xp-select"
-                  value={row.scope}
-                  onChange={event => { update(index, { scope: event.target.value as Scope }) }}
-                >
-                  <option value="write">{tr('scopeWrite')}</option>
-                  <option value="always-write">{tr('scopeAlways')}</option>
-                </select>
-              </label>
-              <div style={styles.pills}>
-                <span style={styles.dim}>{tr('surfaces')}</span>
-                <button
-                  type="button"
-                  className={row.surfaces.includes('fs') ? 'xp-button xp-button-on' : 'xp-button xp-button-off'}
-                  onClick={() => { toggleSurface(index, 'fs') }}
-                >
-                  {tr('surfaceFs')}
-                </button>
-                <button
-                  type="button"
-                  className={row.surfaces.includes('shell') ? 'xp-button xp-button-on' : 'xp-button xp-button-off'}
-                  onClick={() => { toggleSurface(index, 'shell') }}
-                >
-                  {tr('surfaceShell')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      })}
+      <TextModeEditor
+        tr={tr}
+        value={text}
+        errors={textErrors}
+        defaultsText={tr('editorDefaults', { access: defaults.access, surfaces: defaults.surfaces.join('+') })}
+        onChange={change}
+      />
 
-      {error !== undefined && <div style={styles.warn}>{error}</div>}
+      {error !== undefined ? <div style={styles.danger}>{error}</div> : null}
 
-      <div style={styles.panel}>
-        <div style={styles.panelHead}>
-          {tr('previewTitle')}{dirty ? tr('previewDirty') : ''}
-          {preview !== undefined ? <span style={styles.dim}>{tr('previewEffective', { count: preview.effective.length })}</span> : null}
-        </div>
-        {typedBase === ''
-          ? <div style={styles.dim}>{tr('previewNoBase')}</div>
-          : !usableBase
-            ? <div style={styles.dim}>{tr('previewBadBase')}</div>
-            : base === ''
-              ? <div style={styles.dim}>{tr('previewExpandingHome')}</div>
-              : preview === undefined
-                ? <div style={styles.dim}>{tr('previewUnavailable')}</div>
-                : (
-                  <>
-                    {preview.entries.length === 0
-                      ? <div style={styles.dim}>{tr('previewEmpty')}</div>
-                      : preview.entries.map((entry, index) => (
-                        <div style={styles.entry} key={`${index}-${entry.raw}`}>
-                          <span style={STATUS_STYLE[entry.status]}>
-                            [{tr(entry.status === 'ok' ? 'statusOk' : entry.status === 'missing' ? 'statusMissing' : 'statusRejected')}]
-                          </span>
-                          <code style={styles.code}>{entry.raw}</code>
-                          <span style={styles.dim}>→</span>
-                          <code style={styles.code}>{entry.resolved === '' ? tr('unresolved') : entry.resolved}</code>
-                        </div>
-                      ))}
-                    {preview.warnings.map(warning => <div style={styles.warn} key={warning}>{warning}</div>)}
-                  </>
-                )}
-      </div>
+      <PreviewPanel
+        tr={tr}
+        expanded={previewExpanded}
+        onToggle={() => { setPreviewExpanded(!previewExpanded) }}
+        typedBase={cwd.trim()}
+        base={base}
+        preview={preview}
+        dirty={dirty}
+      />
     </div>
   )
 }

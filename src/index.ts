@@ -22,6 +22,7 @@ import { renderExtraPathsContext } from './context.js'
 import { installListener, fallbackPolicyOf } from './listener.js'
 import { registerPreviewRoute } from './preview.js'
 import { extraPathsSchema, extraPathsConfigSchema } from './schema.js'
+import { installToolGuard } from './tool-guard.js'
 
 /** The settings namespace the client page binds to. */
 export const SETTINGS_NAMESPACE = 'extra-paths'
@@ -33,8 +34,12 @@ export const SETTINGS_NAMESPACE = 'extra-paths'
  */
 export const Config = extraPathsConfigSchema
 
-/** Config keys this plugin owns, in schema order. */
-const CONFIG_KEYS = ['defaultScope', 'defaultSurfaces', 'paths'] as const
+/**
+ * Config keys this plugin owns, in schema order. `defaultScope` stays: it is the
+ * legacy alias `normalizeConfig` maps onto `defaultAccess`, and reading it keeps
+ * a 0.2.x settings document (which only ever wrote `defaultScope`) live.
+ */
+const CONFIG_KEYS = ['defaultAccess', 'defaultScope', 'defaultSurfaces', 'paths'] as const
 
 /**
  * Normalise the entry config, degrading to the documented empty configuration
@@ -164,19 +169,47 @@ export function apply(ctx: PluginContext, config?: RawConfig): void {
 
   const listener = installListener(ctx, { readConfig, fallbackPolicy: fallbackPolicyOf, warn })
 
+  // Tool-layer deny guard: `grep`/`glob` read through the host's bundled
+  // ripgrep instead of `ctx.fs`, so a denied path named in a tool's own
+  // arguments is refused here as well. installToolGuard feature-detects
+  // `ctx.tools.guard` (a host without it is a silent no-op) and the disposer is
+  // owned by this fiber. This is a supplementary seam, not the guarantee: the
+  // fs proxy stays authoritative for read/write tools, and the default
+  // workspace-wide scan remains a documented boundary.
+  const installGuard = (): (() => void) => installToolGuard(ctx, { readConfig, warn })
+  if (typeof ctx.effect === 'function') ctx.effect(installGuard, 'extra-paths: tool guard')
+  else installGuard()
+
   ctx.inject(['settings'], (scope) => {
     const settings = (scope as unknown as { settings: SettingsSurface }).settings
     // 0.2.x: no registration API at all. The namespace is this entry, its schema
     // is the exported `Config`, and `readConfig` above already reads the live
     // volatile fields, so there is nothing to wire here.
     if (typeof settings.register !== 'function') return
+    // The 0.1.5 service merges `base` UNDER the stored user section. The stored
+    // document of an older install may still carry the legacy `defaultScope`, so
+    // the base deliberately omits BOTH access aliases: a base
+    // `defaultAccess: 'write'` next to the user's `defaultScope: 'always-write'`
+    // would trip normalizeConfig's conflict guard and disable the whole
+    // configuration. The `write` default comes from the normaliser instead.
+    const base: RawConfig = { defaultSurfaces: entryConfig.defaultSurfaces, paths: entryConfig.paths }
     const registered = settings.register(SETTINGS_NAMESPACE, extraPathsSchema, {
-      base: entryConfig,
+      base,
       applies: 'live',
       validate: (value) => { validateConfig(value as RawConfig) },
     })
-    current = normalizeConfig(registered.get() as RawConfig)
-    registered.watch((value) => { current = normalizeConfig(value as RawConfig) })
+    // A stored section the normaliser rejects (a hand-edited YAML, an old host's
+    // schema drift) must degrade to the previous configuration, never throw out
+    // of the injection and leave the plugin half-applied.
+    const adopt = (value: unknown, source: string): void => {
+      try {
+        current = normalizeConfig(value as RawConfig)
+      } catch (error) {
+        warn(`extra-paths: configuration from ${source} rejected (${String(error)}); keeping the previous configuration`)
+      }
+    }
+    adopt(registered.get(), 'the settings service')
+    registered.watch(value => { adopt(value, 'a settings change') })
   })
 
   ctx.inject(['systemPrompt'], (scope) => {

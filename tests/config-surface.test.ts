@@ -11,15 +11,18 @@ import { extraPathsConfigSchema, extraPathsSchema } from '../src/schema.js'
  * descriptor at all — the settings page would simply not exist). These tests pin
  * that surface without needing a running 0.2.x host.
  */
+
+/** The generated field descriptors of one object schema. */
+const fields = (schema: unknown): Record<string, { meta?: { volatile?: boolean; default?: unknown } }> =>
+  (schema as { dict: Record<string, { meta?: { volatile?: boolean; default?: unknown } }> }).dict
+
 describe('the plugin Config export', () => {
   it('is the same schema the host reads as entry.fiber.runtime.Config', () => {
     expect(Config).toBe(extraPathsConfigSchema)
   })
 
   it('marks every field volatile, which is what makes a generated form exist', () => {
-    const fields = (schema: unknown): Record<string, { meta?: { volatile?: boolean } }> =>
-      (schema as { dict: Record<string, { meta?: { volatile?: boolean } }> }).dict
-    for (const key of ['defaultScope', 'defaultSurfaces', 'paths']) {
+    for (const key of ['defaultAccess', 'defaultScope', 'defaultSurfaces', 'paths']) {
       expect(fields(Config)[key]?.meta?.volatile, `${key} must be volatile on 0.2.x`).toBe(true)
       // The 0.1.5 registration schema stays plain: that service consumes values,
       // not volatile holders, so one schema cannot serve both.
@@ -27,11 +30,61 @@ describe('the plugin Config export', () => {
     }
   })
 
+  it('leaves the access aliases WITHOUT a schema default, so a legacy document cannot conflict', () => {
+    // The 0.2.x framework materialises schema defaults before the plugin reads the
+    // section. A `defaultAccess: write` default would then appear next to a legacy
+    // `defaultScope: always-write` and `normalizeConfig` would reject the whole
+    // configuration; the documented default lives in the normaliser instead.
+    expect(fields(Config).defaultAccess?.meta?.default).toBeUndefined()
+    expect(fields(Config).defaultScope?.meta?.default).toBeUndefined()
+    expect(fields(Config).defaultSurfaces?.meta?.default).toEqual(['fs', 'shell'])
+  })
+
   it('resolves the documented defaults through the volatile holders', () => {
-    const resolved = Config({}) as unknown as Record<string, { get(): unknown }>
-    expect(resolved.defaultScope?.get()).toBe('write')
+    const resolved = Config({})
     expect(resolved.defaultSurfaces?.get()).toEqual(['fs', 'shell'])
     expect(resolved.paths?.get()).toEqual([])
+    // The access default is reached by the normaliser, not by a schema default.
+    expect(normalizeConfig(readLiveConfig(resolved)).defaultAccess).toBe('write')
+  })
+
+  it('keeps the new access vocabulary on the resolved section', () => {
+    const resolved = Config({
+      defaultAccess: 'read',
+      defaultSurfaces: ['fs'],
+      paths: [{ path: '/x', access: 'deny', surfaces: ['shell'] }],
+    })
+    expect(normalizeConfig(readLiveConfig(resolved))).toEqual({
+      defaultAccess: 'read',
+      defaultSurfaces: ['fs'],
+      paths: [{ path: '/x', access: 'deny', surfaces: ['shell'] }],
+    })
+  })
+
+  it('keeps accepting the legacy defaultScope / scope spellings', () => {
+    // One document shape from 0.2.x must stay readable: only the legacy spelling
+    // is present, so nothing materialises a conflicting defaultAccess.
+    const resolved = Config({ defaultScope: 'always-write', paths: [{ path: '/x', scope: 'write', surfaces: ['fs'] }] })
+    expect(normalizeConfig(readLiveConfig(resolved))).toEqual({
+      defaultAccess: 'always-write',
+      defaultSurfaces: ['fs', 'shell'],
+      paths: [{ path: '/x', access: 'write', surfaces: ['fs'] }],
+    })
+  })
+
+  it('accepts both spellings on the 0.1.5 plain schema too', () => {
+    const section = extraPathsSchema({
+      defaultScope: 'always-write',
+      paths: [{ path: '/x', access: 'read', surfaces: ['fs'] }],
+    })
+    expect(normalizeConfig(section)).toMatchObject({
+      defaultAccess: 'always-write',
+      paths: [{ path: '/x', access: 'read', surfaces: ['fs'] }],
+    })
+    expect(normalizeConfig(extraPathsSchema({ defaultAccess: 'deny', paths: ['/y'] }))).toMatchObject({
+      defaultAccess: 'deny',
+      paths: [{ path: '/y', access: 'deny' }],
+    })
   })
 })
 
@@ -41,12 +94,12 @@ describe('readLiveConfig', () => {
     const section = readLiveConfig(resolved)
     expect(section).toBeDefined()
     expect(normalizeConfig(section).paths).toEqual([
-      { path: '~/projects/**/.worktrees/*', scope: 'write', surfaces: ['fs', 'shell'] },
+      { path: '~/projects/**/.worktrees/*', access: 'write', surfaces: ['fs', 'shell'] },
     ])
   })
 
   it('passes a plain config through unchanged (0.1.5 and hand-written patches)', () => {
-    const plain = { defaultScope: 'always-write', paths: ['/data'] }
+    const plain = { defaultAccess: 'read', defaultScope: 'always-write', paths: ['/data'] }
     expect(readLiveConfig(plain)).toEqual(plain)
     expect(readLiveConfig(undefined)).toBeUndefined()
     expect(readLiveConfig(null)).toBeUndefined()

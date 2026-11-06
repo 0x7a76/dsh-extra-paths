@@ -129,7 +129,9 @@ describe('client slot registrations', () => {
 
     const page = renderToStaticMarkup(React.createElement(card!, { view: 'page' }))
     expect(page).toContain('基准工作区')
-    expect(page).toContain('添加工作区上一层（..）')
+    expect(page).toContain('每行一条规则')
+    expect(page).toContain('class="xp-textarea"')
+    expect(page).not.toContain('添加工作区上一层（..）')
   })
 
   it('registers the zh/en dictionaries for its namespace and binds that namespace', () => {

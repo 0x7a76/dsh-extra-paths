@@ -26,11 +26,13 @@ export declare const SETTINGS_NAMESPACE = "extra-paths";
  * are `volatile()` because a settings form only describes volatile fields.
  */
 export declare const Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
-    defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope, import("./config.js").Scope, "defined">;
+    defaultAccess: import("@deepseek-ai/schemastery").default<import("./config.js").Access>;
+    defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope>;
     defaultSurfaces: import("@deepseek-ai/schemastery").default<import("./config.js").Surface[], import("./config.js").Surface[], "defined">;
     paths: import("@deepseek-ai/schemastery").default<(string | import("./schema.js").ExtraPathsSectionEntry)[], (string | import("./schema.js").ExtraPathsSectionEntry)[], "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
-    defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope, import("./config.js").Scope, "defined">;
+    defaultAccess: import("@deepseek-ai/schemastery").default<import("./config.js").Access>;
+    defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope>;
     defaultSurfaces: import("@deepseek-ai/schemastery").default<import("./config.js").Surface[], import("./config.js").Surface[], "defined">;
     paths: import("@deepseek-ai/schemastery").default<(string | import("./schema.js").ExtraPathsSectionEntry)[], (string | import("./schema.js").ExtraPathsSectionEntry)[], "defined">;
 }>>, "plain">;
@@ -74,11 +76,13 @@ export declare function apply(ctx: PluginContext, config?: RawConfig): void;
 declare const plugin: typeof apply & {
     inject: readonly ["sandboxPolicy"];
     Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
-        defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope, import("./config.js").Scope, "defined">;
+        defaultAccess: import("@deepseek-ai/schemastery").default<import("./config.js").Access>;
+        defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope>;
         defaultSurfaces: import("@deepseek-ai/schemastery").default<import("./config.js").Surface[], import("./config.js").Surface[], "defined">;
         paths: import("@deepseek-ai/schemastery").default<(string | import("./schema.js").ExtraPathsSectionEntry)[], (string | import("./schema.js").ExtraPathsSectionEntry)[], "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
-        defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope, import("./config.js").Scope, "defined">;
+        defaultAccess: import("@deepseek-ai/schemastery").default<import("./config.js").Access>;
+        defaultScope: import("@deepseek-ai/schemastery").default<import("./config.js").Scope>;
         defaultSurfaces: import("@deepseek-ai/schemastery").default<import("./config.js").Surface[], import("./config.js").Surface[], "defined">;
         paths: import("@deepseek-ai/schemastery").default<(string | import("./schema.js").ExtraPathsSectionEntry)[], (string | import("./schema.js").ExtraPathsSectionEntry)[], "defined">;
     }>>, "plain">;

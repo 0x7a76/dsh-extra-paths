@@ -1,51 +1,74 @@
 /**
- * The plugin's configuration vocabulary: a plugin-level default scope and
+ * The plugin's configuration vocabulary: a plugin-level default access level and
  * surface set, plus per-path entries that override them. Everything here is
  * pure so the settings schema, the CLI-facing validator, and the enforcement
  * layers share one normalisation.
+ *
+ * 0.3.0 widened the old `scope` (`write` | `always-write`) into a full access
+ * level: `deny` (no read, no write), `read` (read-only, even inside the
+ * workspace), `write` (writable while the session policy is workspace-write)
+ * and `always-write` (writable under read-only too). The legacy `scope` field
+ * and `defaultScope` are still accepted and map onto the new vocabulary, so an
+ * existing settings document keeps working unchanged.
  * @module dsh-extra-paths/config
  */
 
-/** How far one configured root's write grant reaches across session modes. */
+import { classifySpelling, isAbsoluteSpelling, isBareNameSpelling, isVolumeRootSpelling, normalizePatternSpelling } from './platform.js'
+
+/** How far one configured path's grant/restriction reaches. */
+export type Access = 'deny' | 'read' | 'write' | 'always-write'
+
+/** The legacy write-only vocabulary, still accepted from older documents. */
 export type Scope = 'write' | 'always-write'
 
-/** Which enforcement surface a configured root's grant applies to. */
+/** Which enforcement surface a configured path applies to. */
 export type Surface = 'fs' | 'shell'
 
-/** All scopes, in escalation order. */
-export const SCOPES: readonly Scope[] = ['write', 'always-write']
+/** All access levels, from most restrictive to most permissive. */
+export const ACCESSES: readonly Access[] = ['deny', 'read', 'write', 'always-write']
 
 /** All surfaces. `fs` is the write/edit tool family; `shell` is the subprocess sandbox. */
 export const SURFACES: readonly Surface[] = ['fs', 'shell']
 
-/** One configured root after normalisation. */
+/** One configured path after normalisation. */
 export interface PathEntry {
   readonly path: string
-  readonly scope: Scope
+  readonly access: Access
   readonly surfaces: readonly Surface[]
 }
 
 /** The normalised configuration the enforcement layers read. */
 export interface ExtraPathsConfig {
-  readonly defaultScope: Scope
+  readonly defaultAccess: Access
   readonly defaultSurfaces: readonly Surface[]
   readonly paths: readonly PathEntry[]
 }
 
 /** Untrusted configuration as it arrives from the settings document or entry config. */
 export interface RawConfig {
+  readonly defaultAccess?: unknown
+  /** Legacy alias for `defaultAccess`; `always-write` / `write`. */
   readonly defaultScope?: unknown
   readonly defaultSurfaces?: unknown
   readonly paths?: unknown
 }
 
-const DEFAULT_SCOPE: Scope = 'write'
+/** One untrusted path entry (the stored shape accepts a bare string too). */
+interface RawEntry {
+  readonly path?: unknown
+  readonly access?: unknown
+  /** Legacy per-entry scope; maps onto `access`. */
+  readonly scope?: unknown
+  readonly surfaces?: unknown
+}
+
+const DEFAULT_ACCESS: Access = 'write'
 const DEFAULT_SURFACES: readonly Surface[] = [...SURFACES]
 
-function readScope(value: unknown, fallback: Scope, label: string): Scope {
+function readAccess(value: unknown, fallback: Access, label: string): Access {
   if (value === undefined) return fallback
-  if (typeof value === 'string' && (SCOPES as readonly string[]).includes(value)) return value as Scope
-  throw new Error(`${label}: scope must be one of ${SCOPES.join(' | ')}, received ${JSON.stringify(value)}`)
+  if (typeof value === 'string' && (ACCESSES as readonly string[]).includes(value)) return value as Access
+  throw new Error(`${label}: access must be one of ${ACCESSES.join(' | ')}, received ${JSON.stringify(value)}`)
 }
 
 function readSurfaces(value: unknown, fallback: readonly Surface[], label: string): readonly Surface[] {
@@ -62,6 +85,43 @@ function readSurfaces(value: unknown, fallback: readonly Surface[], label: strin
 }
 
 /**
+ * Pick one entry's access level, resolving the legacy `scope` alias. Writing
+ * both spellings with DIFFERENT meanings is a configuration error: silently
+ * preferring one would store a rule the user did not intend.
+ */
+function readEntryAccess(entry: RawEntry, fallback: Access, label: string): Access {
+  const access = readAccess(entry.access, fallback, `${label}.access`)
+  if (entry.scope === undefined) return access
+  const legacy = readAccess(entry.scope, fallback, `${label}.scope`)
+  if (entry.access !== undefined && legacy !== access) {
+    throw new Error(
+      `${label}: access ${JSON.stringify(access)} conflicts with legacy scope ${JSON.stringify(legacy)}; `
+      + 'use one spelling',
+    )
+  }
+  // Without an explicit `access`, the legacy `scope` is the entry's level (the
+  // old document only ever stored `scope`, so this is the migration path).
+  return entry.access === undefined ? legacy : access
+}
+
+/**
+ * The canonical comparison key used by the duplicate check. Windows spellings
+ * are compared case-insensitively with both separator kinds stripped (Windows
+ * treats them as the same path); POSIX spellings only lose a trailing `/`.
+ */
+function duplicateKey(path: string): string {
+  // A bare name is a NAME RULE, not a path: two identical names are one rule.
+  if (isBareNameSpelling(path)) return `name:${path}`
+  const kind = classifySpelling(path)
+  if (kind === 'windows-absolute' || kind === 'windows-home') {
+    // `windows-home` cannot be collapsed without the home directory; a lexical
+    // separator/case fold is enough for a duplicate check.
+    return path.replaceAll('/', '\\').replace(/\\+$/, '').toLowerCase()
+  }
+  return path.replace(/\/+$/, '') || '/'
+}
+
+/**
  * Normalise untrusted configuration, applying defaults and rejecting anything
  * the enforcement layers could not act on.
  * @param raw - the settings section or entry config.
@@ -69,7 +129,16 @@ function readSurfaces(value: unknown, fallback: readonly Surface[], label: strin
  * @throws {Error} on a malformed entry, unknown vocabulary, or empty surfaces.
  */
 export function normalizeConfig(raw: RawConfig | undefined): ExtraPathsConfig {
-  const defaultScope = readScope(raw?.defaultScope, DEFAULT_SCOPE, 'defaultScope')
+  const legacyDefault = raw?.defaultScope === undefined ? undefined : readAccess(raw.defaultScope, DEFAULT_ACCESS, 'defaultScope')
+  const defaultAccess = raw?.defaultAccess === undefined
+    ? (legacyDefault ?? DEFAULT_ACCESS)
+    : readAccess(raw.defaultAccess, legacyDefault ?? DEFAULT_ACCESS, 'defaultAccess')
+  if (legacyDefault !== undefined && raw?.defaultAccess !== undefined && legacyDefault !== defaultAccess) {
+    throw new Error(
+      `defaultAccess ${JSON.stringify(defaultAccess)} conflicts with legacy defaultScope `
+      + `${JSON.stringify(legacyDefault)}; use one spelling`,
+    )
+  }
   const defaultSurfaces = readSurfaces(raw?.defaultSurfaces, DEFAULT_SURFACES, 'defaultSurfaces')
   const list = raw?.paths
   if (list !== undefined && !Array.isArray(list)) {
@@ -77,7 +146,7 @@ export function normalizeConfig(raw: RawConfig | undefined): ExtraPathsConfig {
   }
   const paths = (list ?? []).map((item, index): PathEntry => {
     const label = `paths[${index}]`
-    const entry = (typeof item === 'string' ? { path: item } : item ?? {}) as { path?: unknown; scope?: unknown; surfaces?: unknown }
+    const entry = (typeof item === 'string' ? { path: item } : item ?? {}) as RawEntry
     if (typeof entry.path !== 'string' || entry.path.trim() === '') {
       throw new Error(`${label}: path must be a non-empty string, received ${JSON.stringify(entry.path)}`)
     }
@@ -86,72 +155,122 @@ export function normalizeConfig(raw: RawConfig | undefined): ExtraPathsConfig {
       const cause = entry.surfaces === undefined && defaultSurfaces.length === 0 ? ' (defaultSurfaces is empty)' : ''
       throw new Error(`${label}: at least one surface is required${cause}`)
     }
-    return { path: entry.path.trim(), scope: readScope(entry.scope, defaultScope, label), surfaces }
+    return { path: entry.path.trim(), access: readEntryAccess(entry, defaultAccess, label), surfaces }
   })
-  return { defaultScope, defaultSurfaces, paths }
+  return { defaultAccess, defaultSurfaces, paths }
 }
 
 /**
- * Whether a path names a filesystem root, which would disable the sandbox
- * outright. A bare drive (`C:`) is drive-RELATIVE rather than a root, but it is
- * rejected conservatively: on Windows it can still resolve to a whole volume,
- * and the message says so instead of mislabelling it.
+ * Whether a spelling names a filesystem root (or a bare drive), which would
+ * disable the sandbox outright. A bare drive (`C:`) is drive-RELATIVE rather
+ * than a root, but it is rejected conservatively: on Windows it can still
+ * resolve to a whole volume, and the message says so instead of mislabelling it.
+ * @param path - a path spelling.
+ * @returns true for `/`, `C:`, `C:\`, `C:/` and a UNC share root.
  */
 export function isFilesystemRoot(path: string): boolean {
-  return path === '/' || /^[A-Za-z]:[\\/]?$/.test(path)
+  return isVolumeRootSpelling(path)
 }
 
+/**
+ * Reject one pattern the resolver could never walk safely. The grammar and the
+ * walk caps live in `pattern.ts`; this is the SAVE-TIME gate so the user learns
+ * before a walk is ever attempted.
+ *
+ * Two anchor families:
+ * - ABSOLUTE (`/…`, `~`, `C:\…`): needs at least two literal segments and must
+ *   not start at a volume root — `/**` and `~/**` would walk a filesystem/home;
+ * - WORKSPACE-RELATIVE (a leading `**` then `.git`, an anchor directory then
+ *   the same, or a leading `..` then `**` then the name): anchored at
+ *   the session workspace like a relative path, so no minimum depth; a leading
+ *   wildcard pattern must still contain one literal segment, or it would sweep
+ *   the whole workspace.
+ */
+function validatePattern(path: string, label: string): void {
+  const source = normalizePatternSpelling(path)
+  if (!source.includes('*')) return
+  const segments = source.split('/').filter(segment => segment !== '')
+  const firstWildcard = segments.findIndex(segment => segment.includes('*'))
+  const anchorPrefix = source.slice(0, source.indexOf('*'))
+  // Absoluteness is judged on the RAW prefix (see pattern.ts): `/**` strips to
+  // an empty anchor but is still an absolute root pattern.
+  const absoluteAnchor = isAbsoluteSpelling(anchorPrefix)
+  const anchorSpelling = anchorPrefix.replace(/\/+$/, '')
+  const walk = segments.slice(firstWildcard)
+  if (absoluteAnchor) {
+    const anchorDepth = segments.slice(0, firstWildcard).length
+    if (anchorDepth < 2) {
+      throw new Error(
+        `${label}: pattern ${JSON.stringify(path)} needs a literal anchor of at least two segments `
+        + '(for example ~/projects/**/.worktrees/..)',
+      )
+    }
+    if (isVolumeRootSpelling(anchorSpelling)) {
+      throw new Error(`${label}: pattern ${JSON.stringify(path)} starts at a volume root and would walk a whole volume`)
+    }
+  } else if (anchorSpelling === '' && !walk.some(segment => !segment.includes('*') && segment !== '..')) {
+    throw new Error(
+      `${label}: pattern ${JSON.stringify(path)} would sweep the whole workspace; `
+      + 'add a literal segment (for example **/.git) or an anchor directory',
+    )
+  }
+  let last = walk.length - 1
+  while (last >= 0 && walk[last] === '..') last -= 1
+  if (walk.slice(0, last + 1).includes('..')) {
+    throw new Error(`${label}: '..' may only appear at the END of a pattern, received ${JSON.stringify(path)}`)
+  }
+}
 /**
  * The settings service's `validate` hook: refuse a write the plugin could never
  * act on, so the user learns at save time instead of storing a dead section.
+ * A `foreign` entry (a Windows path on a POSIX host) is NOT an error: one shared
+ * configuration must remain savable on every platform and simply stays inactive.
  * @param raw - the resolved section the write would store.
- * @throws {Error} on a duplicate literal entry or a filesystem root.
+ * @throws {Error} on a duplicate literal entry, an ambiguous drive-relative
+ *   spelling, a volume root, or an unsafe pattern.
  */
 export function validateConfig(raw: RawConfig | undefined): void {
   const config = normalizeConfig(raw)
-  // Trailing separators are stripped for the duplicate key so `/a` and `/a/`
-  // collide here rather than silently merging later; `/` keeps its meaning.
   const firstSeen = new Map<string, number>()
   config.paths.forEach((entry, index) => {
+    const label = `paths[${index}]`
+    // A bare name (`.git`, `.env`) is matched at any depth; it is neither a
+    // volume root nor a wildcard pattern, so only the duplicate check applies.
+    // All four access levels stay legal (the docs recommend deny/read, but a
+    // name-scoped grant is expressible and the user may want it).
+    if (isBareNameSpelling(entry.path)) {
+      const key = `name:${entry.path}`
+      const first = firstSeen.get(key)
+      if (first !== undefined) {
+        throw new Error(
+          `${label}: duplicate name rule ${JSON.stringify(entry.path)} (first configured at paths[${first}])`,
+        )
+      }
+      firstSeen.set(key, index)
+      return
+    }
     // The root check runs FIRST: for ['//', '/'] the duplicate key would
     // otherwise report the less useful of two true reasons.
     if (isFilesystemRoot(entry.path)) {
       throw new Error(
-        `paths[${index}]: ${JSON.stringify(entry.path)} names a filesystem root (or a bare drive) `
+        `${label}: ${JSON.stringify(entry.path)} names a filesystem root (or a bare drive) `
         + 'and would disable the sandbox',
       )
     }
-    // Both separator kinds are stripped so the rule matches its own name on
-    // either platform's spelling; a spelling that strips to empty is the root
-    // itself (already rejected above).
-    const key = entry.path.replace(/[\\/]+$/, '') || '/'
+    if (classifySpelling(entry.path) === 'windows-drive-relative') {
+      throw new Error(
+        `${label}: ${JSON.stringify(entry.path)} is a drive-relative path (it depends on that drive's current `
+        + 'directory); use an absolute path such as C:\\<dir>',
+      )
+    }
+    const key = duplicateKey(entry.path)
     const first = firstSeen.get(key)
     if (first !== undefined) {
       throw new Error(
-        `paths[${index}]: duplicate path entry ${JSON.stringify(entry.path)} (first configured at paths[${first}])`,
+        `${label}: duplicate path entry ${JSON.stringify(entry.path)} (first configured at paths[${first}])`,
       )
     }
     firstSeen.set(key, index)
-    // A PATTERN (see `pattern.ts`) is only walkable when its literal anchor is
-    // deep enough to bound the search: `~/projects/**` is fine, `~/**` and `/**`
-    // would walk a whole home directory or the filesystem and are refused here
-    // rather than silently yielding nothing at resolve time.
-    if (entry.path.includes('*')) {
-      const segments = entry.path.split('/').filter(segment => segment !== '')
-      const firstWildcard = segments.findIndex(segment => segment.includes('*'))
-      const anchorDepth = segments.slice(0, firstWildcard).length
-      if (anchorDepth < 2) {
-        throw new Error(
-          `paths[${index}]: pattern ${JSON.stringify(entry.path)} needs a literal anchor of at least two segments `
-          + '(for example ~/projects/**/.worktrees/..)',
-        )
-      }
-      const walk = segments.slice(firstWildcard)
-      let last = walk.length - 1
-      while (last >= 0 && walk[last] === '..') last -= 1
-      if (walk.slice(0, last + 1).includes('..')) {
-        throw new Error(`paths[${index}]: '..' may only appear at the END of a pattern, received ${JSON.stringify(entry.path)}`)
-      }
-    }
+    validatePattern(entry.path, label)
   })
 }

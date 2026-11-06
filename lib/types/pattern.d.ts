@@ -13,16 +13,24 @@
  * Matching only ever yields directories that EXIST, which is what makes "the path
  * contains `.worktrees`" a structural condition rather than a spelling.
  *
+ * A Windows spelling is parsed in its OWN dialect first (`C:\a\**`, `\\server\…`):
+ * separators are normalised for the grammar, and the literal anchor is translated
+ * through `expandConfiguredPath`, so the same configuration also works on the
+ * other platform. A spelling whose anchor cannot be expressed on this host is
+ * `foreign`: inactive with one warning, never a save failure.
+ *
  * Safety envelope, enforced here and validated again at save time:
  * - the literal prefix before the first wildcard is the anchor; it must be
- *   absolute after `~` expansion, must not be a filesystem root, and must not
- *   CONTAIN the home directory — a pattern can never walk `/`, `/Users` or `~`;
+ *   absolute in its own dialect after `~` expansion, must not resolve to a
+ *   volume root (including a translated WSL drive root), and must not CONTAIN
+ *   the home directory — a pattern can never walk `/`, `/Users` or `~`;
  * - the walk never descends into `node_modules` or `.git`;
  * - every cap (depth, directories scanned, matches) makes the WHOLE pattern yield
  *   nothing (fail closed) instead of a partial set: a half-expanded grant would
  *   be an unpredictable permission.
  * @module dsh-extra-paths/pattern
  */
+import { type PlatformFacts } from './platform.js';
 /** Caps that keep one pattern's expansion bounded. */
 export declare const PATTERN_LIMITS: {
     /** Directory entries examined in one expansion. */
@@ -41,12 +49,18 @@ export declare const PATTERN_LIMITS: {
 export interface RootPattern {
     /** The configured spelling this came from (for messages and the preview). */
     readonly source: string;
-    /** The literal directory the walk starts from (absolute). */
+    /** The literal directory the walk starts from (absolute, host-native). */
     readonly anchor: string;
     /** Segments after the anchor, each `*`, `**`, or a literal name. */
     readonly segments: readonly string[];
     /** Trailing `..` segments applied to each match. */
     readonly up: number;
+    /**
+     * The host facts the anchor was translated with. The walk must use the SAME
+     * dialect as the parser: re-deriving it from `process.platform` would make a
+     * pattern parsed for one host walk with another host's `node:path`.
+     */
+    readonly platform: PlatformFacts;
 }
 /** One expansion. */
 export interface PatternExpansion {
@@ -65,16 +79,40 @@ export interface PatternExpansion {
     /** Directories examined, for diagnostics. */
     readonly scanned: number;
 }
+/** Why a pattern spelling could not be turned into a walkable pattern. */
+export type PatternParseOutcome = {
+    readonly ok: true;
+    readonly pattern: RootPattern;
+}
+/**
+ * Not walkable here. `foreign` is set when the ANCHOR is a spelling of the
+ * other platform: the entry must stay inactive with one informative warning
+ * (a shared configuration has to remain usable on every host), while every
+ * other rejection is a configuration mistake.
+ */
+ | {
+    readonly ok: false;
+    readonly foreign?: string;
+};
 /** Whether a spelling is a pattern rather than a literal path. */
 export declare function isPattern(raw: string): boolean;
+/**
+ * Parse a pattern spelling and keep the reason when it cannot be walked.
+ * @param raw - the configured spelling (POSIX or Windows).
+ * @param workspaceRoot - the base a relative anchor resolves against.
+ * @param facts - host facts (defaults to the discovered ones); the anchor is
+ *   translated into the host's dialect with these.
+ * @returns the pattern, or a rejection that says whether it is merely foreign.
+ */
+export declare function parsePatternOutcome(raw: string, workspaceRoot: string, facts?: PlatformFacts): PatternParseOutcome;
 /**
  * Parse a pattern spelling.
  * @param raw - the configured spelling.
  * @param workspaceRoot - the base a relative anchor resolves against.
- * @param home - the home directory to expand `~` with.
+ * @param facts - host facts (defaults to the discovered ones).
  * @returns the parsed pattern, or undefined when it cannot be walked safely.
  */
-export declare function parsePattern(raw: string, workspaceRoot: string, home?: string): RootPattern | undefined;
+export declare function parsePattern(raw: string, workspaceRoot: string, facts?: PlatformFacts): RootPattern | undefined;
 /**
  * Expand a pattern against the filesystem.
  * @param pattern - the parsed pattern.

@@ -1,8 +1,18 @@
 /**
  * The subprocess half of the plugin: a transparent Proxy over `ctx.sandbox`
- * that appends one write grant per configured root to the argv the base
- * provider already wrapped. An unrecognised runner dialect fails closed: the
- * argv is returned untouched (the write stays denied) and a warning is logged.
+ * that appends the configured shell-surface rules to the argv the base provider
+ * already wrapped — write grants AND the deny/read-only restrictions the runner
+ * dialect can express (see {@link widenArgv}).
+ *
+ * A sandbox profile can only name CONCRETE paths, so a BARE NAME rule
+ * (`.git`, `.env`, `node_modules`) is deliberately NOT enforced here: expanding
+ * a name into "the paths it currently matches" means walking the workspace plus
+ * every writable root before commands — costly, stale by up to the cache TTL,
+ * and silently partial when one root is deep or unreadable (the real host hit
+ * exactly that). Name rules therefore protect the fs tools only, where the
+ * match is lexical, exact and live on every call. A configured `shell` surface
+ * on a name rule gets an explicit one-time notice (see
+ * {@link warnNameRulesAreFsOnly}) instead of a stale or partial mask set.
  *
  * THE WRAPPER MIRRORS THE INNER PROVIDER'S SYNC-NESS, because that changed
  * between host generations and both must work:
@@ -19,8 +29,15 @@
  * widened in a continuation instead of being forced through `async` — the same
  * code satisfies a caller that awaits and one that does not.
  *
- * A dialect the wrapper does not recognise (`windows-acl`, a remote
- * `sandbox-ssh` runner) also fails closed, as does an unknown one.
+ * Every confinement also records the OBSERVED runner dialect (shell-dialect.ts),
+ * which drives the settings page's capability badges. A dialect that cannot
+ * express the rules must never be silently mis-claimed:
+ * - `danger-full-access` has no runner to inject into, so the record is returned
+ *   untouched (the fs half still enforces the hard rules);
+ * - `landlock` can grant but cannot subtract, and `windows-acl` can do neither:
+ *   both warn ONCE per dialect + rule signature and the command still runs.
+ *   Warning only once is the fix for a real log-flood: a denied rule sits in the
+ *   configuration and every single command would otherwise re-report it.
  * @module dsh-extra-paths/wrap-sandbox
  */
 import type { ExtraPathsConfig } from './config.js';
@@ -41,6 +58,8 @@ export interface SandboxWrapDeps {
     readConfig(): ExtraPathsConfig;
     warn(message: string): void;
 }
+/** Test-only: forget the capability warnings that have been logged. */
+export declare function resetShellWarnings(): void;
 /**
  * Whether a service is a process-sandbox provider.
  *
@@ -55,6 +74,7 @@ export declare function isConfiningSandbox(value: unknown): value is SandboxInne
  * Wrap one sandbox provider.
  * @param inner - the provider read from the context.
  * @param deps - configuration source and warning sink.
- * @returns a transparent proxy that widens profiles for configured roots.
+ * @returns a transparent proxy that widens profiles for configured roots and
+ *   appends the shell-surface restrictions the runner can express.
  */
 export declare function wrapSandbox(inner: SandboxInnerLike, deps: SandboxWrapDeps): SandboxInnerLike;
