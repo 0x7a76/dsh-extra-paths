@@ -22,6 +22,7 @@ import { renderExtraPathsContext } from './context.js'
 import { installListener, fallbackPolicyOf } from './listener.js'
 import { registerPreviewRoute } from './preview.js'
 import { extraPathsSchema, extraPathsConfigSchema } from './schema.js'
+import { sessionDirectoryOf, type SessionLike } from './session-dir.js'
 import { installToolGuard } from './tool-guard.js'
 
 /** The settings namespace the client page binds to. */
@@ -88,6 +89,8 @@ interface PluginContext {
   on: Parameters<typeof installListener>[0]['on']
   inject(names: readonly string[], callback: (scope: never) => void): unknown
   effect?(callback: () => unknown, label?: string): unknown
+  /** Non-strict service read, used to feature-detect `workingDirectory` (0.2.x). */
+  get?(name: string, strict?: boolean): unknown
   sandboxPolicy: unknown
 }
 
@@ -106,7 +109,13 @@ interface SettingsSurface {
 /** System-prompt service surface used here. */
 interface SystemPromptSurface {
   getContextOrder(name: 'SANDBOX_POLICY'): number
-  context(section: { name: string; order: number; text: (context: { agent?: { session?: { header?: { cwd?: string } } } }) => string }): unknown
+  context(section: {
+    name: string
+    order: number
+    /** 0.2.x: keep generated path text literal (a path may contain `{{...}}`). */
+    interpolate?: boolean
+    text: (context: { agent?: { session?: SessionLike }; session?: SessionLike }) => string
+  }): unknown
 }
 
 /** Web carrier surface used here. */
@@ -176,7 +185,13 @@ export function apply(ctx: PluginContext, config?: RawConfig): void {
   // owned by this fiber. This is a supplementary seam, not the guarantee: the
   // fs proxy stays authoritative for read/write tools, and the default
   // workspace-wide scan remains a documented boundary.
-  const installGuard = (): (() => void) => installToolGuard(ctx, { readConfig, warn })
+  const installGuard = (): (() => void) => installToolGuard(ctx, {
+    readConfig,
+    warn,
+    // The host's current directory wins once 0.2.x exposes it; header cwd is
+    // the immutable fallback for 0.1.5 and compositions without the service.
+    sessionDir: session => sessionDirectoryOf(ctx, session),
+  })
   if (typeof ctx.effect === 'function') ctx.effect(installGuard, 'extra-paths: tool guard')
   else installGuard()
 
@@ -217,7 +232,14 @@ export function apply(ctx: PluginContext, config?: RawConfig): void {
     systemPrompt.context({
       name: 'extra-paths:writable',
       order: systemPrompt.getContextOrder('SANDBOX_POLICY') + 2,
-      text: context => renderExtraPathsContext(readConfig, context.agent?.session?.header?.cwd),
+      // A configured path is arbitrary user text; never treat it as a prompt
+      // template (a path containing {{...}} would otherwise fail assembly).
+      interpolate: false,
+      text: context => {
+        const session = context.session ?? context.agent?.session
+        const cwd = sessionDirectoryOf(ctx, session) ?? session?.header?.cwd
+        return renderExtraPathsContext(readConfig, cwd)
+      },
     })
   })
 

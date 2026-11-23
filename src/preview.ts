@@ -161,13 +161,29 @@ export function buildPreview(
   }
 }
 
+/** The subset of an admitted Peer this route checks (0.2.3+; absent on older hosts). */
+export interface PeerLike {
+  readonly principal?: { readonly kind?: string }
+}
+
 /** The route-registration context surface (webServer + connection). */
 export interface PreviewRouteContext {
   webServer: {
-    register(route: { kind: 'exact'; path: string; handler: (req: IncomingMessageLike, res: ServerResponseLike) => void | Promise<void> }): () => void
+    register(route: {
+      kind: 'exact'
+      path: string
+      /** 0.2.3+ route admission; older hosts ignore the field and use Connection instead. */
+      auth?: 'required'
+      handler: (req: IncomingMessageLike, res: ServerResponseLike, peer?: PeerLike) => void | Promise<void>
+    }): () => void
   }
   connection: {
-    requestRejection(request: unknown): number | undefined
+    /**
+     * 0.1.5–0.2.2 trust/authentication fence. 0.2.3 removed it: WebServer's
+     * route admission (default `required`) plus Connection's
+     * `webserver/authorize` listener perform the same check before dispatch.
+     */
+    requestRejection?(request: unknown): number | undefined
   }
   effect(callback: () => () => void, label: string): unknown
 }
@@ -193,8 +209,20 @@ export function registerPreviewRoute(
   ctx: PreviewRouteContext,
   deps: { readConfig(): ExtraPathsConfig; warn(message: string): void },
 ): void {
-  const handler = async (req: IncomingMessageLike, res: ServerResponseLike): Promise<void> => {
-    const rejection = ctx.connection.requestRejection(req)
+  const handler = async (req: IncomingMessageLike, res: ServerResponseLike, peer?: PeerLike): Promise<void> => {
+    // The preview discloses host paths and platform facts. On 0.2.3+ the route
+    // is admitted before dispatch, so a non-owner Peer is authenticated but must
+    // not read the host's filesystem layout. Older hosts pass no Peer and keep
+    // relying on Connection's fence below.
+    const principal = peer?.principal
+    if (principal !== undefined && principal.kind !== 'owner') {
+      res.writeHead(403)
+      res.end('forbidden')
+      return
+    }
+    // 0.2.3 removed requestRejection; its WebServer route admission already
+    // rejected unauthenticated requests before this handler ran.
+    const rejection = ctx.connection.requestRejection?.(req)
     if (rejection !== undefined) {
       res.writeHead(rejection)
       res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
@@ -217,5 +245,10 @@ export function registerPreviewRoute(
       res.end(String((error as Error).message ?? error))
     }
   }
-  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: PREVIEW_PATH, handler }), 'extra-paths: preview route')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: PREVIEW_PATH,
+    auth: 'required',
+    handler,
+  }), 'extra-paths: preview route')
 }

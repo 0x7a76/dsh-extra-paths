@@ -9,7 +9,8 @@
 
 | 插件版本 | 含义 | 支持的 DSH 线 |
 |---|---|---|
-| `0.3.1` | 访问级别（`deny` / `read` / `write` / `always-write`，旧 `scope` 自动兼容）+ 跨平台路径（Windows/WSL 互译，无法表达的条目 inactive）+ 名称规则（无分隔符的裸名 `.git`/`.env`/`node_modules` 在工作区与可写根内任意深度匹配，**仅 fs 工具**）+ 模式支持工作区相对锚点（`**/.git`）与末段文件匹配（`**/.env`）+ 纯文本规则编辑器（每行一条 + 默认值行 + 内置示例；长行不折行、横向滚动）（当前） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
+| `0.4.0` | 支持 DSH 0.2.3 线：WebServer 路由级 `auth` 取代 Connection.`requestRejection`（旧线用可选调用兼容）+ prompt/tool guard 跟随 `workingDirectory`（会话移动后不再按旧 header cwd）+ 预览路由保持认证并限制 owner | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 / 0.2.3（当前） |
+| `0.3.1` | 访问级别（`deny` / `read` / `write` / `always-write`，旧 `scope` 自动兼容）+ 跨平台路径（Windows/WSL 互译，无法表达的条目 inactive）+ 名称规则（无分隔符的裸名 `.git`/`.env`/`node_modules` 在工作区与可写根内任意深度匹配，**仅 fs 工具**）+ 模式支持工作区相对锚点（`**/.git`）与末段文件匹配（`**/.env`）+ 纯文本规则编辑器（每行一条 + 默认值行 + 内置示例；长行不折行、横向滚动） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
 | `0.3.0` | 访问级别（`deny` / `read` / `write` / `always-write`，旧 `scope` 自动兼容）+ 跨平台路径（Windows/WSL 互译，无法表达的条目 inactive）+ 名称规则（裸名在工作区与可写根内任意深度匹配，**仅 fs 工具**）+ 模式支持工作区相对锚点与末段文件匹配 + 纯文本规则编辑器（长行折行版；被 0.3.1 取代） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
 | `0.2.1` | 设置页文案跟随 DSH 语言选择（zh/en 字典 + 框架 `t` seat） | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
 | `0.2.0` | 支持 0.2.2 线；补齐 0.2.2 新增的三类 fs 变更（patch/delete/move）；设置页保存被拒时显式报错 | 0.1.5 / 0.2.0 / 0.2.1 / 0.2.2 |
@@ -21,11 +22,12 @@
   每次发布同步写进本文件顶部的表与 tag message。
 
 🔴 **兼容范围有两处，必须同时改**：`engines.dsh` **和每一个 `@deepseek-ai/dsh-*` peer**——
-0.2.x 的 `dsh plugin add` 会**逐条**用 semver 校验 peer（`includePrerelease` 参与匹配），任一条不满足就
-**拒绝安装**。当前值：
+有 `engines.dsh` 时安装闸门只按它逐版本判断（`includePrerelease` 参与匹配；peer 不参与闸门，
+见 `dsh-app-boot/src/plugin-compatibility.ts`），但 peer 仍是 npm 元数据、无 `engines.dsh` 时的兜底
+与人工核对依据，必须同步。当前值：
 
 ```
->=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0
+>=0.1.5-0 <0.1.6-0 || >=0.2.0-0 <0.2.2-0 || >=0.2.2-0 <0.2.3-0 || >=0.2.3-0 <0.2.4-0
 ```
 
 `-0` 后缀是刻意的：写 `<0.1.6` 会放行 `0.1.6-alpha.2`，写 `<0.2.2` 会放行 `0.2.2-alpha.1`。
@@ -92,7 +94,7 @@
   例如 `npm i --prefix /tmp/dsh-peers @deepseek-ai/dsh-client-ui-settings@<宿主线>`），或者
   `pnpm add -D @deepseek-ai/dsh-client-ui-settings@<宿主线>`（会进 lockfile，与 `autoInstallPeers: false` 的取舍见
   `pnpm-workspace.yaml`）。客户端只有一个空的 `import type {}` 依赖该包可解析。
-- **测试默认跑全量**：21 个文件 / 528 条 / 约 1 秒。本仓库的改动几乎都落在跨模块契约上
+- **测试默认跑全量**：23 个文件 / 537 条 / 约 1 秒。本仓库的改动几乎都落在跨模块契约上
   （服务包装器、policy 换算、模式展开、客户端槽位），收敛范围反而更容易漏。
 - 文档分工：`README.md`（英文）+ `README.zh.md`（中文）只面向使用者（是什么、怎么装、怎么配）；
   `docs/superpowers/plans/` 记实现与踩坑；本文件只写约定。技术细节（两代宿主契约、机制、版本规则）写在这里或
@@ -120,7 +122,7 @@
   （改了 `src/` 忘记重建会直接红）；`.github/workflows/release.yml` 在推 `v*` tag 时用 **OIDC** 把版本
   **提交到 npm 暂存区**（不需要任何 token，**不会直接上线**），等维护者 2FA 批准后才出现在 registry，
   同时建一个 draft GitHub Release。
-  ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.2-rc.1`，
+  ⚠️ **CI runner 上没有 DSH**：workflow 会先往 `$RUNNER_TEMP/dsh-peers` 装一个 `@deepseek-ai/dsh-client-ui-settings@0.2.3-alpha.2`，
   再用 `DSH_APP_DIR` 指过去——因为 `scripts/dsh-paths.mjs` 是严格的，而 **`@deepseek-ai/dsh` 这个 npm 包并不含那些 peer**
   （它 82 个依赖里一个都没有）。扩宿主线时记得同步这个锚点版本。
   发布的完整步骤见上方「发布一个版本的 SOP」。
@@ -180,4 +182,8 @@
   的 `insert[].id`（profile 那层只管开关状态），所以行键稳定。
   `tests/client-slots.test.ts` 把这两个键与 `package.json` / `cordis.patch.yml` 钉在一起。
   **未声明的 slot 用 `ctx.slots.inject` 注册是静默 no-op（不报错）**，只有裸 `slots.register` 才抛。
-- **预览路由**用 `connection.requestRejection(req)` 拒绝未认证请求（两代都有）；路由 handler 自己负责完整响应生命周期。
+- **预览路由的认证有两代**：0.1.5–0.2.2 用 `connection.requestRejection(req)` 拒绝未认证请求；0.2.3 删除了该方法，
+  改由 WebServer 路由级 `auth: 'required'`（默认值）在 dispatch 前认证，并把已认证的 `peer` 作为 handler 第三参传入。
+  实现必须写成 `ctx.connection.requestRejection?.(req)` 并在注册时显式声明 `auth: 'required'`——只删调用不加 `auth`
+  会让旧线失去认证。新线还要用 `peer.principal.kind === 'owner'` 限制预览（它暴露 host 路径与平台事实）。
+  路由 handler 自己负责完整响应生命周期。

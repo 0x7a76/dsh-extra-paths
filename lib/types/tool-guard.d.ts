@@ -25,6 +25,7 @@
  * @module dsh-extra-paths/tool-guard
  */
 import type { ExtraPathsConfig } from './config.js';
+import type { SessionLike } from './session-dir.js';
 /**
  * The fields of one tool execution this guard reads. A structural subset of the
  * host's `ToolExecution` (name/arguments/agent) so this module imports no
@@ -35,19 +36,21 @@ export interface ToolExecutionLike {
     readonly name?: string;
     /** The raw, untrusted tool arguments. */
     readonly arguments?: unknown;
-    /** The owning agent, whose session header carries the workspace cwd. */
+    /** The owning agent; its Session carries the workspace cwd (or a live move). */
     readonly agent?: {
-        readonly session?: {
-            readonly header?: {
-                readonly cwd?: string;
-            };
-        };
+        readonly session?: SessionLike;
     };
 }
 /** What the guard needs from the plugin. */
 export interface ToolGuardDeps {
     readConfig(): ExtraPathsConfig;
     warn(message: string): void;
+    /**
+     * The Session's current directory from the host's `workingDirectory` service,
+     * when the running host has one. Absent on 0.1.5 and in plain unit tests, in
+     * which case the immutable header cwd is used.
+     */
+    sessionDir?(session: SessionLike): string | undefined;
 }
 /**
  * Collect the candidate path strings of one tool call.

@@ -84,6 +84,17 @@ describe('guardReason', () => {
     expect(reason).toContain('secrets/certs')
   })
 
+  it('uses the host working directory over the immutable header cwd', () => {
+    const exec = execution('grep', { path: 'secrets/key' }, join(base, 'other'))
+    // Without the service the header cwd is the only answer: the candidate is
+    // outside the denied root and the guard keeps no opinion.
+    expect(guardReason(exec, depsOf(denyConfig))).toBeUndefined()
+    // With 0.2.x's service the same candidate is judged in the moved directory,
+    // exactly like the sandbox policy.
+    const moved = { ...depsOf(denyConfig), sessionDir: () => base }
+    expect(guardReason(exec, moved)).toBeDefined()
+  })
+
   it('refuses a path under a denied directory reached through a symlink spelling', () => {
     const reason = guardReason(execution('read', { path: join(base, 'secrets', '..', 'secrets', 'key') }), depsOf(denyConfig))
     expect(reason).toBeDefined()

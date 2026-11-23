@@ -29,6 +29,7 @@ import type { ExtraPathsConfig } from './config.js'
 import { matchDenied, toolAccessDenied } from './denial.js'
 import { canonicalizeRoot, discoverPlatformFacts, expandConfiguredPath } from './paths.js'
 import { nameScopeRoots, resolveRoots } from './resolve.js'
+import type { SessionLike } from './session-dir.js'
 import { matchNameRule, nameRuleHitAsResolvedRule } from './wrap-fs.js'
 
 /**
@@ -41,13 +42,9 @@ export interface ToolExecutionLike {
   readonly name?: string
   /** The raw, untrusted tool arguments. */
   readonly arguments?: unknown
-  /** The owning agent, whose session header carries the workspace cwd. */
+  /** The owning agent; its Session carries the workspace cwd (or a live move). */
   readonly agent?: {
-    readonly session?: {
-      readonly header?: {
-        readonly cwd?: string
-      }
-    }
+    readonly session?: SessionLike
   }
 }
 
@@ -55,6 +52,12 @@ export interface ToolExecutionLike {
 export interface ToolGuardDeps {
   readConfig(): ExtraPathsConfig
   warn(message: string): void
+  /**
+   * The Session's current directory from the host's `workingDirectory` service,
+   * when the running host has one. Absent on 0.1.5 and in plain unit tests, in
+   * which case the immutable header cwd is used.
+   */
+  sessionDir?(session: SessionLike): string | undefined
 }
 
 /** Argument property names that carry a filesystem path. */
@@ -155,7 +158,13 @@ export function guardReason(execution: ToolExecutionLike, deps: ToolGuardDeps): 
     // The tool runs in the calling session's workspace; a relative argument is
     // resolved against it rather than against the plugin process's own cwd. The
     // same workspace is the first name-rule scope root.
-    const base = execution.agent?.session?.header?.cwd ?? process.cwd()
+    const session = execution.agent?.session
+    // 0.2.3's sandbox policy resolves relative paths against workingDirectory,
+    // so the guard must judge the same directory after a Host move. The header
+    // cwd remains the fallback for older hosts and absent services.
+    const base = (session === undefined ? undefined : deps.sessionDir?.(session))
+      ?? session?.header?.cwd
+      ?? process.cwd()
     const report = resolveRoots(config, base, facts)
     const denied = report.denied.filter(rule => rule.surfaces.includes('fs'))
     const nameDenied = report.nameRules.filter(rule => rule.access === 'deny' && rule.surfaces.includes('fs'))

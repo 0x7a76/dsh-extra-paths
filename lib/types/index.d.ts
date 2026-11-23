@@ -63,6 +63,8 @@ interface PluginContext {
     on: Parameters<typeof installListener>[0]['on'];
     inject(names: readonly string[], callback: (scope: never) => void): unknown;
     effect?(callback: () => unknown, label?: string): unknown;
+    /** Non-strict service read, used to feature-detect `workingDirectory` (0.2.x). */
+    get?(name: string, strict?: boolean): unknown;
     sandboxPolicy: unknown;
 }
 /**

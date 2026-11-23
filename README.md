@@ -10,7 +10,9 @@ page plus a live preview of the effective rules for the current workspace.
 
 ## Install
 
-Requires DSH `0.1.5` / `0.2.0` / `0.2.1` / `0.2.2` (outside that range the install gate refuses the package).
+Requires DSH `0.1.5` / `0.2.0` / `0.2.1` / `0.2.2` / `0.2.3` (outside that range the install gate refuses the package).
+
+0.2.3 is currently distributed through npm's `alpha` tag (`0.2.3-alpha.2`); the plugin also keeps the 0.1.5–0.2.2 lines working unchanged.
 
 ```bash
 dsh plugin --profile <name> add dsh-extra-paths            # <name> = your profile

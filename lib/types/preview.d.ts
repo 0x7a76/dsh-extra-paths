@@ -77,17 +77,30 @@ export declare function parseStagedPaths(raw: string | null | undefined): RawCon
  * invalid (the caller answers 400).
  */
 export declare function buildPreview(config: ExtraPathsConfig, workspaceRoot: string | undefined, staged?: RawConfig | undefined, options?: PreviewOptions): PreviewResponse;
+/** The subset of an admitted Peer this route checks (0.2.3+; absent on older hosts). */
+export interface PeerLike {
+    readonly principal?: {
+        readonly kind?: string;
+    };
+}
 /** The route-registration context surface (webServer + connection). */
 export interface PreviewRouteContext {
     webServer: {
         register(route: {
             kind: 'exact';
             path: string;
-            handler: (req: IncomingMessageLike, res: ServerResponseLike) => void | Promise<void>;
+            /** 0.2.3+ route admission; older hosts ignore the field and use Connection instead. */
+            auth?: 'required';
+            handler: (req: IncomingMessageLike, res: ServerResponseLike, peer?: PeerLike) => void | Promise<void>;
         }): () => void;
     };
     connection: {
-        requestRejection(request: unknown): number | undefined;
+        /**
+         * 0.1.5–0.2.2 trust/authentication fence. 0.2.3 removed it: WebServer's
+         * route admission (default `required`) plus Connection's
+         * `webserver/authorize` listener perform the same check before dispatch.
+         */
+        requestRejection?(request: unknown): number | undefined;
     };
     effect(callback: () => () => void, label: string): unknown;
 }
